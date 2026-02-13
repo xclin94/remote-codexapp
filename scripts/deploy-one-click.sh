@@ -17,7 +17,7 @@ NGINX_PATH="${NGINX_PATH:-/codex}"
 APP_PORT="${APP_PORT:-18888}"
 REPO_URL="${REPO_URL:-git@github.com:JasonShui716/remote-codexapp.git}"
 GIT_BRANCH="${GIT_BRANCH:-main}"
-APP_USER="${APP_USER:-root}"
+APP_USER="${APP_USER:-${SUDO_USER:-$(id -un)}}"
 SKIP_NGINX="${SKIP_NGINX:-0}"
 SKIP_SERVICE="${SKIP_SERVICE:-0}"
 
@@ -26,6 +26,7 @@ echo "[deploy-one-click] DOMAIN=${DOMAIN:-<interactive>}"
 echo "[deploy-one-click] NGINX_PATH=${NGINX_PATH}"
 echo "[deploy-one-click] APP_PORT=${APP_PORT}"
 echo "[deploy-one-click] GIT_BRANCH=${GIT_BRANCH}"
+echo "[deploy-one-click] APP_USER=${APP_USER}"
 echo "[deploy-one-click] SKIP_NGINX=${SKIP_NGINX} SKIP_SERVICE=${SKIP_SERVICE}"
 
 run_deploy() {
@@ -42,18 +43,4 @@ run_deploy() {
     bash "${ROOT_DIR}/scripts/deploy-remote.sh"
 }
 
-if [[ "${EUID}" -eq 0 ]]; then
-  run_deploy
-else
-  sudo env \
-    APP_DIR="${APP_DIR}" \
-    DOMAIN="${DOMAIN}" \
-    NGINX_PATH="${NGINX_PATH}" \
-    APP_PORT="${APP_PORT}" \
-    REPO_URL="${REPO_URL}" \
-    GIT_BRANCH="${GIT_BRANCH}" \
-    APP_USER="${APP_USER}" \
-    SKIP_NGINX="${SKIP_NGINX}" \
-    SKIP_SERVICE="${SKIP_SERVICE}" \
-    bash "${ROOT_DIR}/scripts/deploy-remote.sh"
-fi
+run_deploy

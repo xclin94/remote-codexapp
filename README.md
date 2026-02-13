@@ -133,13 +133,13 @@ cd /opt/remote-codexapp
 chmod +x scripts/deploy-remote.sh
 
 # Option A: interactive domain input
-sudo APP_DIR=/opt/remote-codexapp \
+APP_DIR=/opt/remote-codexapp \
   NGINX_PATH=/codex \
   APP_PORT=18888 \
   bash scripts/deploy-remote.sh
 
 # Option B: explicit domain (non-interactive)
-sudo APP_DIR=/opt/remote-codexapp \
+APP_DIR=/opt/remote-codexapp \
   DOMAIN=your.domain.com \
   NGINX_PATH=/codex \
   APP_PORT=18888 \
@@ -174,6 +174,7 @@ bash scripts/deploy-one-click.sh your.domain.com
 
 - Pulls or clones repo
 - `npm install` and `npm run build`
+- Runs git/npm as `APP_USER` (no `sudo npm` requirement)
 - Writes/patches `server/.env` (`HOST/PORT/CODEX_CWD`)
 - Installs/updates systemd unit `/etc/systemd/system/codex-remoteapp.service`
 - Generates/reloads Nginx config for reverse proxy path

@@ -133,13 +133,13 @@ cd /opt/remote-codexapp
 chmod +x scripts/deploy-remote.sh
 
 # 方式 A：交互式输入域名
-sudo APP_DIR=/opt/remote-codexapp \
+APP_DIR=/opt/remote-codexapp \
   NGINX_PATH=/codex \
   APP_PORT=18888 \
   bash scripts/deploy-remote.sh
 
 # 方式 B：显式传入域名
-sudo APP_DIR=/opt/remote-codexapp \
+APP_DIR=/opt/remote-codexapp \
   DOMAIN=your.domain.com \
   NGINX_PATH=/codex \
   APP_PORT=18888 \
@@ -172,6 +172,7 @@ bash scripts/deploy-one-click.sh your.domain.com
 
 - 拉取/克隆仓库
 - 执行 `npm install` 与 `npm run build`
+- git/npm 以 `APP_USER` 身份执行（不依赖 `sudo npm`）
 - 写入/更新 `server/.env`（`HOST/PORT/CODEX_CWD`）
 - 安装/更新 systemd 服务：`/etc/systemd/system/codex-remoteapp.service`
 - 生成并重载 Nginx 配置

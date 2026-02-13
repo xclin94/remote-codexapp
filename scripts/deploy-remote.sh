@@ -9,7 +9,7 @@ NGINX_PATH="${NGINX_PATH:-/codex}"
 DOMAIN="${DOMAIN:-}"
 APP_PORT="${APP_PORT:-18888}"
 SERVICE_NAME="${SERVICE_NAME:-codex-remoteapp}"
-APP_USER="${APP_USER:-$(id -un)}"
+APP_USER="${APP_USER:-${SUDO_USER:-$(id -un)}}"
 APP_GROUP="${APP_GROUP:-${APP_USER}}"
 SKIP_NGINX="${SKIP_NGINX:-0}"
 SKIP_SERVICE="${SKIP_SERVICE:-0}"
@@ -59,6 +59,25 @@ ensure_root_cmd() {
   else
     SUDO=""
   fi
+}
+
+run_as_app_user() {
+  if [[ "$(id -un)" == "${APP_USER}" ]]; then
+    "$@"
+    return
+  fi
+
+  if command -v sudo >/dev/null 2>&1; then
+    sudo -u "${APP_USER}" -H "$@"
+    return
+  fi
+
+  if command -v runuser >/dev/null 2>&1; then
+    runuser -u "${APP_USER}" -- "$@"
+    return
+  fi
+
+  su -s /bin/bash "${APP_USER}" -c "$(printf '%q ' "$@")"
 }
 
 ensure_env_value() {
@@ -206,7 +225,6 @@ if [[ "$SKIP_NGINX" != "1" && -z "${DOMAIN}" ]]; then
 fi
 
 require_cmd git
-require_cmd npm
 if [[ "$SKIP_SERVICE" != "1" ]]; then
   require_cmd systemctl
 fi
@@ -218,20 +236,40 @@ fi
 APP_DIR="${APP_DIR%/}"
 ENV_FILE="${APP_DIR}/server/.env"
 
-if [[ -d "$APP_DIR" ]]; then
+if ! id "${APP_USER}" >/dev/null 2>&1; then
+  echo "Service/build user not found: ${APP_USER}" >&2
+  exit 1
+fi
+
+if ! run_as_app_user bash -lc 'command -v npm >/dev/null 2>&1'; then
+  echo "npm not found for user ${APP_USER}" >&2
+  exit 1
+fi
+
+if [[ ! -d "${APP_DIR}" ]]; then
+  ensure_root_cmd
+  ${SUDO:-} mkdir -p "${APP_DIR}"
+  ${SUDO:-} chown "${APP_USER}:${APP_GROUP}" "${APP_DIR}"
+fi
+
+if [[ -d "${APP_DIR}/.git" ]]; then
   log "Updating existing checkout: $APP_DIR"
-  git -C "$APP_DIR" fetch --all --prune
-  git -C "$APP_DIR" checkout "$GIT_BRANCH"
-  if git -C "$APP_DIR" rev-parse --verify "origin/${GIT_BRANCH}" >/dev/null 2>&1; then
-    git -C "$APP_DIR" pull --ff-only "origin" "$GIT_BRANCH"
+  run_as_app_user git -C "$APP_DIR" fetch --all --prune
+  run_as_app_user git -C "$APP_DIR" checkout "$GIT_BRANCH"
+  if run_as_app_user git -C "$APP_DIR" rev-parse --verify "origin/${GIT_BRANCH}" >/dev/null 2>&1; then
+    run_as_app_user git -C "$APP_DIR" pull --ff-only "origin" "$GIT_BRANCH"
   fi
 else
   log "Cloning ${REPO_URL} to ${APP_DIR}"
-  git clone --depth 1 --branch "$GIT_BRANCH" "$REPO_URL" "$APP_DIR"
+  if [[ -n "$(find "${APP_DIR}" -mindepth 1 -maxdepth 1 2>/dev/null || true)" ]]; then
+    echo "target app dir is not empty and is not a git checkout: ${APP_DIR}" >&2
+    exit 1
+  fi
+  run_as_app_user git clone --depth 1 --branch "$GIT_BRANCH" "$REPO_URL" "$APP_DIR"
 fi
 
 log "Installing dependencies and building web bundle"
-(cd "$APP_DIR" && npm install && npm run build)
+run_as_app_user bash -lc "cd '$APP_DIR' && npm install && npm run build"
 
 if [[ ! -f "$ENV_FILE" ]]; then
   cp "$APP_DIR/server/.env.example" "$ENV_FILE"
@@ -244,9 +282,9 @@ ensure_env_value "$ENV_FILE" "CODEX_CWD" "$APP_DIR"
 if [[ "$SKIP_SERVICE" != "1" ]]; then
   ensure_root_cmd
   SERVICE_FILE="/etc/systemd/system/${SERVICE_NAME}.service"
-  NPM_BIN="$(command -v npm)"
-  if ! id "$APP_USER" >/dev/null 2>&1; then
-    echo "Service user not found: ${APP_USER}" >&2
+  NPM_BIN="$(run_as_app_user bash -lc 'command -v npm')"
+  if [[ -z "${NPM_BIN}" ]]; then
+    echo "npm not found for user ${APP_USER}" >&2
     exit 1
   fi
   cat > /tmp/"${SERVICE_NAME}.service" <<EOF
