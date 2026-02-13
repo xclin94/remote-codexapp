@@ -123,6 +123,13 @@ git clone git@github.com:JasonShui716/remote-codexapp.git /opt/remote-codexapp
 cd /opt/remote-codexapp
 chmod +x scripts/deploy-remote.sh
 
+# Option 1: interactive domain input (recommended on first deploy)
+sudo APP_DIR=/opt/remote-codexapp \
+  NGINX_PATH=/codex \
+  APP_PORT=18888 \
+  bash scripts/deploy-remote.sh
+
+# Option 2: explicit domain via env variable
 sudo APP_DIR=/opt/remote-codexapp \
   DOMAIN=your.domain.com \
   NGINX_PATH=/codex \

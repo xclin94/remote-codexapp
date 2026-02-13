@@ -6,7 +6,7 @@ REPO_URL="${REPO_URL_DEFAULT}"
 GIT_BRANCH="${GIT_BRANCH:-main}"
 APP_DIR="${APP_DIR:-/opt/remote-codexapp}"
 NGINX_PATH="${NGINX_PATH:-/codex}"
-DOMAIN="${DOMAIN:-_}"
+DOMAIN="${DOMAIN:-}"
 APP_PORT="${APP_PORT:-18888}"
 SERVICE_NAME="${SERVICE_NAME:-codex-remoteapp}"
 APP_USER="${APP_USER:-$(id -un)}"
@@ -24,7 +24,7 @@ Quick deploy + install:
   --repo <url>       Git repo URL (default: ${REPO_URL_DEFAULT})
   --dir <path>       App install directory (default: ${APP_DIR})
   --branch <name>    Git branch/tag (default: ${GIT_BRANCH})
-  --domain <name>    Nginx server_name (default: ${DOMAIN})
+  --domain <name>    Nginx server_name (default: prompt in interactive mode, _ for wildcard)
   --path <nginx>     Public app path, e.g. /codex (default: ${NGINX_PATH})
   --port <number>    Backend port (default: ${APP_PORT})
   --user <name>      Service run user (default: ${APP_USER})
@@ -189,6 +189,16 @@ if [[ ! "${APP_PORT}" =~ ^[0-9]+$ ]]; then
   exit 1
 fi
 
+if [[ "$SKIP_NGINX" != "1" && -z "${DOMAIN}" ]]; then
+  if [[ -t 0 && -t 1 ]]; then
+    read -r -p "Enter domain for nginx server_name (or blank for _): " domain_input
+    DOMAIN="${domain_input:-_}"
+  else
+    echo "DOMAIN is required unless SKIP_NGINX=1" >&2
+    exit 1
+  fi
+fi
+
 require_cmd git
 require_cmd npm
 if [[ "$SKIP_SERVICE" != "1" ]]; then
@@ -298,4 +308,6 @@ if [[ "$SKIP_NGINX" != "1" ]]; then
 fi
 
 log "Done."
-log "Visit: http://${DOMAIN}${NGINX_PATH}" 
+if [[ "$SKIP_NGINX" != "1" ]]; then
+  log "Visit: http://${DOMAIN}${NGINX_PATH}"
+fi

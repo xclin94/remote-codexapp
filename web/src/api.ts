@@ -162,12 +162,21 @@ export async function createChat(): Promise<string> {
 }
 
 export async function createTerminal(cwd?: string): Promise<{ ok: boolean; terminal?: TerminalSession; error?: string }> {
-  const r = await fetch(apiUrl('/api/terminal'), {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    credentials: 'include',
-    body: JSON.stringify(cwd ? { cwd } : {})
-  });
+  const body = JSON.stringify(cwd ? { cwd } : {});
+  const doCreate = async (url: string) => {
+    return fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
+      body
+    });
+  };
+
+  let r = await doCreate(apiUrl('/api/terminal'));
+  if (!r.ok && r.status === 404 && API_PREFIX) {
+    r = await doCreate('/api/terminal');
+  }
+
   const j = await r.json().catch(() => ({}));
   if (!r.ok) return { ok: false, error: j.error || 'failed' };
   if (!j.ok) return { ok: false, error: j.error || 'failed' };
