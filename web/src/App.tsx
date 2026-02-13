@@ -473,6 +473,7 @@ function Chat(props: { chatId: string; sessionId: string; onSwitchChat: (chatId:
   const [credentialInput, setCredentialInput] = useState('');
   const [creatingCredential, setCreatingCredential] = useState(false);
   const [createdCredential, setCreatedCredential] = useState('');
+  const [activeTerminal, setActiveTerminal] = useState<TerminalSession | null>(null);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [approval, setApproval] = useState<{ id: string; message?: string; command?: string[]; cwd?: string } | null>(null);
@@ -647,15 +648,17 @@ function Chat(props: { chatId: string; sessionId: string; onSwitchChat: (chatId:
       }
 
       const terminal = r.terminal;
+      const normalizedTerminal: TerminalSession = {
+        terminalId: terminal.terminalId,
+        cwd: terminal.cwd || defaults?.cwd || '',
+        createdAt: terminal.createdAt || nowTs(),
+        status: terminal.status || 'running'
+      };
+      setActiveTerminal(normalizedTerminal);
       setTerminalList((prev) => {
         const cleaned = prev.filter((item) => item.terminalId !== terminal.terminalId);
         return [
-          {
-            terminalId: terminal.terminalId,
-            cwd: terminal.cwd || defaults?.cwd || '',
-            createdAt: terminal.createdAt || nowTs(),
-            status: terminal.status
-          },
+          normalizedTerminal,
           ...cleaned
         ].slice(0, 20);
       });
@@ -664,6 +667,11 @@ function Chat(props: { chatId: string; sessionId: string; onSwitchChat: (chatId:
     } catch (e: any) {
       setErr(String(e?.message || e));
     }
+  };
+
+  const openTerminal = (terminal: TerminalSession) => {
+    setActiveTerminal(terminal);
+    addSystem(`Open terminal: ${terminal.terminalId} (cwd=${terminal.cwd || 'default'})`);
   };
 
   const selectChat = (chatId: string) => {
@@ -1180,11 +1188,11 @@ function Chat(props: { chatId: string; sessionId: string; onSwitchChat: (chatId:
                 {terminalList.map((terminal) => (
                   <div key={terminal.terminalId} className="session-tab-row">
                     <button
-                      className="session-tab"
+                      className={`session-tab ${terminal.terminalId === activeTerminal?.terminalId ? 'active' : ''}`}
                       type="button"
                       disabled={chatListBusy}
                       title={terminalOptionLabel(terminal)}
-                      onClick={() => addSystem(`Terminal ${terminal.terminalId} (${terminal.status || 'running'}) cwd=${terminal.cwd || 'default'}`)}
+                      onClick={() => openTerminal(terminal)}
                     >
                       <span className="session-tab-id">{terminal.terminalId.slice(0, 6)}</span>
                       <span className="session-tab-preview">{terminalOptionLabel(terminal)}</span>
@@ -1575,6 +1583,41 @@ function Chat(props: { chatId: string; sessionId: string; onSwitchChat: (chatId:
                   <span className="cwdpicker-name">{e.name}</span>
                 </button>
               ))}
+            </div>
+          </div>
+        ) : null}
+
+        {activeTerminal ? (
+          <div className="terminal-panel">
+            <div className="terminal-panel-head">
+              <div className="terminal-panel-title">
+                <span>Active terminal</span>
+                <span className="terminal-panel-id">{activeTerminal.terminalId}</span>
+              </div>
+              <button
+                className="btn btn-secondary btn-sm"
+                type="button"
+                onClick={() => setActiveTerminal(null)}
+              >
+                Close
+              </button>
+            </div>
+            <div className="terminal-panel-grid">
+              <div className="muted">CWD</div>
+              <div>{activeTerminal.cwd || 'default'}</div>
+              <div className="muted">Status</div>
+              <div>{activeTerminal.status || 'running'}</div>
+              <div className="muted">Created</div>
+              <div>{new Date(activeTerminal.createdAt).toLocaleString()}</div>
+            </div>
+            <div className="row row-tight">
+              <button
+                className="btn btn-secondary btn-sm"
+                type="button"
+                onClick={() => void copyCredentialToClipboard(activeTerminal.terminalId)}
+              >
+                Copy terminal id
+              </button>
             </div>
           </div>
         ) : null}

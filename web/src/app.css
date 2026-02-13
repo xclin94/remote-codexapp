@@ -421,6 +421,48 @@ body {
   gap: 12px;
 }
 
+.terminal-panel {
+  padding: 0 16px 12px;
+}
+
+.terminal-panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+
+.terminal-panel-title {
+  display: inline-flex;
+  flex-direction: column;
+  gap: 2px;
+  color: var(--text);
+  font-size: 13px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.terminal-panel-id {
+  color: var(--muted);
+  font-size: 12px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", Courier New, monospace;
+}
+
+.terminal-panel-grid {
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: rgba(255, 255, 255, 0.03);
+  padding: 10px;
+  display: grid;
+  grid-template-columns: 72px 1fr;
+  gap: 8px 10px;
+  margin-bottom: 8px;
+  font-size: 13px;
+  align-items: center;
+  overflow-wrap: anywhere;
+}
+
 .msg {
   display: grid;
   grid-template-columns: 80px 1fr;
