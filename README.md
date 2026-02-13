@@ -1,5 +1,7 @@
 # Codex Remote Web Chat
 
+[English](README.md) | [中文](README.zh-CN.md)
+
 Self-hosted browser UI for OpenAI Codex (via MCP), with OTP/TOTP auth, resumable chat sessions, interactive browser terminal, and one-command deployment. Search tags: `codex`, `remote`, `web chat`, `terminal`, `otp`, `totp`, `nginx`, `systemd`, `nodejs`.
 
 This project is a small Node.js + React frontend/backend app that exposes Codex as a web service. It is designed for remote access from another machine (internet or LAN) and includes path-based proxy support under `/codex`.
