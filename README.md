@@ -95,10 +95,9 @@ Optional:
 
 ### Credential login
 
-- Login page supports entering an issued credential token to create a fresh session without OTP/TOTP.
-- After normal login, open the chat sidebar and use **Access credentials** to create tokens.
-- Created credentials are shown only to the session that created them.
-- Revoke old credentials from the same list.
+- Create credential tokens via API (`POST /api/auth/credential`) after normal login.
+- Use credential token to create a fresh session (`POST /api/auth/credential/login`) without OTP/TOTP.
+- List and revoke credentials via `GET /api/auth/credentials` and `POST /api/auth/credential/revoke`.
 - Store credentials securely; the token is shown once when created and cannot be read again later.
 
 ## Terminal Support
