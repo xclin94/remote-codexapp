@@ -268,6 +268,15 @@ export class SessiondClient {
       for (const e of events) {
         after = e.id;
         this.markKnownCursor(opts.sessionId, opts.chatId, e.id);
+        if (e.event === 'progress') {
+          // Forward as a structured raw event so the main server can display it.
+          if (typeof e.data === 'object' && e.data !== null) {
+            opts.onEvent({ type: 'raw', msg: { type: 'progress', ...(e.data as any) } });
+          } else {
+            opts.onEvent({ type: 'raw', msg: { type: 'progress', stage: 'progress', message: String(e.data || '') } });
+          }
+          continue;
+        }
         if (e.event === 'delta' && typeof e.data?.text === 'string') {
           opts.onEvent({ type: 'agent_message', message: e.data.text });
           continue;

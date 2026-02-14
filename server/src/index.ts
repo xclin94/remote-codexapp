@@ -1660,6 +1660,7 @@ async function syncStreamFromSessiond(sid: string, chatId: string): Promise<void
 
     if (
       e.event === 'approval_request' ||
+      e.event === 'progress' ||
       e.event === 'codex_event' ||
       e.event === 'codex_usage' ||
       e.event === 'codex_rate_limits' ||
@@ -1838,6 +1839,18 @@ async function startChatTurn(opts: { sid: string; chatId: string; text: string; 
           }
           if (e.type === 'approval_request') {
             store.appendStreamEvent(opts.sid, opts.chatId, 'approval_request', e.request);
+            return;
+          }
+          if (
+            e.type === 'raw' &&
+            typeof (e as any).msg === 'object' &&
+            (e as any).msg !== null &&
+            (e as any).msg.type === 'progress'
+          ) {
+            const msg: any = (e as any).msg;
+            const stage = typeof msg.stage === 'string' ? msg.stage : 'progress';
+            const message = typeof msg.message === 'string' ? msg.message : '';
+            store.appendStreamEvent(opts.sid, opts.chatId, 'progress', { stage, message, detail: msg.detail ?? null });
             return;
           }
           store.appendStreamEvent(opts.sid, opts.chatId, 'codex_event', e.msg);

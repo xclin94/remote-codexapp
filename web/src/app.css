@@ -575,6 +575,68 @@ body {
   font-size: 12px;
 }
 
+.activity {
+  padding: 0 16px 14px;
+}
+
+.activity-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+
+.activity-title {
+  color: var(--muted);
+  font-size: 12px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.activity-body {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 160px;
+  overflow: auto;
+  padding-right: 4px;
+}
+
+.activity-item {
+  display: grid;
+  grid-template-columns: 44px 120px 1fr;
+  gap: 10px;
+  align-items: baseline;
+  padding: 6px 10px;
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.10);
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.activity-ago {
+  color: var(--muted);
+  font-size: 12px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+}
+
+.activity-stage {
+  color: rgba(255, 255, 255, 0.82);
+  font-size: 12px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.activity-msg {
+  color: rgba(255, 255, 255, 0.92);
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .queue-panel {
   padding: 0 16px 14px;
 }
@@ -841,6 +903,9 @@ body {
     gap: 8px 10px;
   }
   .queue-item {
+    grid-template-columns: 1fr;
+  }
+  .activity-item {
     grid-template-columns: 1fr;
   }
   .queue-idx {

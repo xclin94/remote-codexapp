@@ -6,6 +6,10 @@ import {
   type CodexRateLimits
 } from './codexMcpClient.js';
 
+function isProgressMsg(msg: unknown): msg is { type: 'progress'; stage?: unknown; message?: unknown; detail?: unknown } {
+  return typeof msg === 'object' && msg !== null && (msg as any).type === 'progress';
+}
+
 type RunnerState = {
   client: CodexMcpClient;
   busy: boolean;
@@ -98,9 +102,39 @@ export class CodexManager {
     r.busy = true;
     r.abort = new AbortController();
     const nextConfigKey = sessionConfigKey(opts.config);
+    const turnStartAt = Date.now();
 
     try {
-      r.client.setEventHandler(opts.onEvent);
+      // Wrap event handler so we can emit low-noise heartbeats when Codex is "thinking"
+      // and not producing any deltas/events for a while.
+      let lastNonProgressAt = Date.now();
+      let lastHeartbeatAt = 0;
+      let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
+      const emit = (e: CodexRunnerEvent) => {
+        if (!(e.type === 'raw' && isProgressMsg(e.msg))) {
+          lastNonProgressAt = Date.now();
+        }
+        opts.onEvent(e);
+      };
+
+      r.client.setEventHandler(emit);
+
+      const heartbeatEveryMs = 10_000;
+      heartbeatTimer = setInterval(() => {
+        const now = Date.now();
+        if (now - lastNonProgressAt < heartbeatEveryMs) return;
+        if (now - lastHeartbeatAt < heartbeatEveryMs) return;
+        lastHeartbeatAt = now;
+        emit({
+          type: 'raw',
+          msg: {
+            type: 'progress',
+            stage: 'heartbeat',
+            message: `still running; quiet=${Math.max(0, Math.round((now - lastNonProgressAt) / 1000))}s; pending_approval=${r.client.hasPendingApprovals() ? 1 : 0}`,
+            detail: { sinceMs: Math.max(0, now - turnStartAt) }
+          }
+        });
+      }, 1000).unref();
 
       // Combine abort signals (client disconnect + explicit abort).
       const signal = opts.signal;
@@ -112,11 +146,27 @@ export class CodexManager {
       // codex-reply does not accept sandbox/approval/cwd/model overrides.
       // When these change, we must restart the underlying Codex session.
       if (r.client.hasSession() && r.sessionConfigKey !== nextConfigKey) {
+        emit({
+          type: 'raw',
+          msg: {
+            type: 'progress',
+            stage: 'session_reset',
+            message: 'session config changed; resetting Codex session'
+          }
+        });
         r.client.resetSessionState();
       }
 
       let callResp;
       if (!r.client.hasSession()) {
+        emit({
+          type: 'raw',
+          msg: {
+            type: 'progress',
+            stage: 'start_session',
+            message: `starting new Codex session (model=${opts.config.model || 'default'}, cwd=${opts.config.cwd || '(default)'})`
+          }
+        });
         callResp = await r.client.startSession(
           {
             prompt: opts.prompt,
@@ -132,6 +182,14 @@ export class CodexManager {
         );
         r.sessionConfigKey = nextConfigKey;
       } else {
+        emit({
+          type: 'raw',
+          msg: {
+            type: 'progress',
+            stage: 'continue_session',
+            message: `continuing Codex session (model=${opts.config.model || 'default'})`
+          }
+        });
         callResp = await r.client.continueSession(opts.prompt, { signal: r.abort.signal });
       }
 
@@ -139,6 +197,12 @@ export class CodexManager {
       const rateLimits = callResp ? r.client.getLastRateLimits() : null;
       return { usage: usage || undefined, rateLimits: rateLimits || undefined };
     } finally {
+      try {
+        // Best-effort cleanup; runTurn can error/abort mid-flight.
+        if (heartbeatTimer) clearInterval(heartbeatTimer);
+      } catch {
+        // ignore
+      }
       r.client.setEventHandler(null);
       r.busy = false;
       r.abort = undefined;

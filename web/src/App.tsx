@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import './app.css';
 import QRCode from 'qrcode';
 import TerminalPanel from './TerminalPanel';
@@ -379,10 +379,21 @@ function Login(props: { onAuthed: () => void | Promise<void> }) {
 }
 
 function Chat(props: { chatId: string; sessionId: string; onSwitchChat: (chatId: string) => void | Promise<void>; onLogout: () => void | Promise<void> }) {
+  const INITIAL_RENDER_COUNT = 15;
+  const LOAD_MORE_COUNT = 15;
+
+  type ActivityItem = {
+    ts: number;
+    stage: string;
+    message: string;
+    source: 'progress' | 'codex_event';
+  };
+
   const [chatList, setChatList] = useState<{ id: string; updatedAt: number; createdAt: number; preview?: string }[]>([]);
   const [terminalList, setTerminalList] = useState<TerminalSession[]>([]);
   const [chatListBusy, setChatListBusy] = useState(false);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [renderCount, setRenderCount] = useState(INITIAL_RENDER_COUNT);
   const [text, setText] = useState('');
   const [composing, setComposing] = useState(false);
   const [activeTerminal, setActiveTerminal] = useState<TerminalSession | null>(null);
@@ -409,11 +420,26 @@ function Chat(props: { chatId: string; sessionId: string; onSwitchChat: (chatId:
   const [cwdNewDirName, setCwdNewDirName] = useState('');
   const [cwdPickerErr, setCwdPickerErr] = useState<string>('');
   const [lastUpdateAt, setLastUpdateAt] = useState<number>(0);
+  const [runtimeStatus, setRuntimeStatus] = useState<string>('');
+  const [runtimeLastEventId, setRuntimeLastEventId] = useState<number>(0);
+  const [lastSseEventAt, setLastSseEventAt] = useState<number>(0);
+  const [lastSseEventId, setLastSseEventId] = useState<number>(0);
+  const [lastSseEventName, setLastSseEventName] = useState<string>('');
+  const [lastDeltaAt, setLastDeltaAt] = useState<number>(0);
+  const [activity, setActivity] = useState<ActivityItem[]>([]);
+  const [activityOpen, setActivityOpen] = useState<boolean>(true);
+  const [pollOkAt, setPollOkAt] = useState<number>(0);
+  const [pollErrorCount, setPollErrorCount] = useState<number>(0);
+  const [pollErrorAt, setPollErrorAt] = useState<number>(0);
+  const [streamErrorCount, setStreamErrorCount] = useState<number>(0);
+  const [streamErrorAt, setStreamErrorAt] = useState<number>(0);
+  const [uiNow, setUiNow] = useState<number>(0);
   const [streamStatus, setStreamStatus] = useState<'connected' | 'reconnecting'>('connected');
   const [queuedPrompts, setQueuedPrompts] = useState<string[]>([]);
   const [mobileChatListOpen, setMobileChatListOpen] = useState(false);
   const [isMobileLayout, setIsMobileLayout] = useState(false);
 
+  const chatRef = useRef<HTMLDivElement | null>(null);
   const bottomRef = useRef<HTMLDivElement | null>(null);
   const esRef = useRef<EventSource | null>(null);
   const lastEventIdRef = useRef<number>(0);
@@ -422,6 +448,41 @@ function Chat(props: { chatId: string; sessionId: string; onSwitchChat: (chatId:
   const startTurnRef = useRef<boolean>(false);
   const busyRef = useRef<boolean>(false);
   const terminalListRefreshSeqRef = useRef(0);
+  const historyLoadRef = useRef<{ prevScrollHeight: number; prevScrollTop: number } | null>(null);
+  const historyLoadingRef = useRef(false);
+
+  const pushActivity = (item: Omit<ActivityItem, 'ts'> & { ts?: number }) => {
+    const ts = typeof item.ts === 'number' ? item.ts : nowTs();
+    const stage = String(item.stage || 'progress');
+    const message = String(item.message || '').slice(0, 220);
+    setActivity((prev) => {
+      const next = [...prev, { ts, stage, message, source: item.source }];
+      const max = 80;
+      return next.length > max ? next.slice(next.length - max) : next;
+    });
+  };
+
+  const summarizeCodexEvent = (msg: any): { stage: string; message: string } | null => {
+    if (!msg) return null;
+    const t = typeof msg.type === 'string' ? msg.type : '';
+    const message =
+      (typeof msg.message === 'string' && msg.message) ||
+      (typeof msg.status === 'string' && msg.status) ||
+      '';
+
+    const cmdArr = Array.isArray(msg.command) ? msg.command.map(String) : null;
+    const cmdStr = cmdArr && cmdArr.length ? cmdArr.join(' ') : '';
+
+    const interesting =
+      Boolean(cmdStr) ||
+      (t && /(tool|command|exec|run|shell|terminal|fs|file|patch|apply|read|write|open|search|error|warn)/i.test(t));
+
+    if (!interesting) return null;
+
+    const stage = t || (cmdStr ? 'command' : 'codex_event');
+    const m = cmdStr || message || (t ? `event=${t}` : 'codex_event');
+    return { stage, message: m.slice(0, 220) };
+  };
 
   useEffect(() => {
     const mq = window.matchMedia('(max-width: 760px)');
@@ -577,6 +638,9 @@ function Chat(props: { chatId: string; sessionId: string; onSwitchChat: (chatId:
         const { sandbox: _s, approvalPolicy: _a, ...savedSettings } = c2.settings || {};
         setSettings(savedSettings);
         if (rt2?.ok && typeof rt2.updatedAt === 'number') setLastUpdateAt(rt2.updatedAt);
+        if (rt2?.ok && typeof rt2.status === 'string') setRuntimeStatus(rt2.status);
+        if (rt2?.ok && typeof rt2.lastEventId === 'number') setRuntimeLastEventId(rt2.lastEventId);
+        setPollOkAt(nowTs());
         if (rt2.ok && rt2.status !== 'running') {
           stopPolling();
           setBusy(false);
@@ -584,6 +648,8 @@ function Chat(props: { chatId: string; sessionId: string; onSwitchChat: (chatId:
           setStreamStatus('connected');
         }
       } catch {
+        setPollErrorCount((c) => c + 1);
+        setPollErrorAt(nowTs());
         // keep trying while reconnecting
       }
     }, 1500);
@@ -602,13 +668,16 @@ function Chat(props: { chatId: string; sessionId: string; onSwitchChat: (chatId:
       setStreamStatus('connected');
     };
 
-    const onAny = (ev: MessageEvent) => {
+    const onAny = (ev: MessageEvent, eventName: string) => {
       const lid = Number((ev as any).lastEventId || '0');
       if (Number.isFinite(lid)) lastEventIdRef.current = lid;
+      if (Number.isFinite(lid)) setLastSseEventId(lid);
+      setLastSseEventAt(nowTs());
+      setLastSseEventName(eventName);
     };
 
     es.addEventListener('start', (ev: any) => {
-      onAny(ev);
+      onAny(ev, 'start');
       try {
         const data = JSON.parse(ev.data || '{}');
         const mid = String(data.assistantMessageId || '');
@@ -626,7 +695,8 @@ function Chat(props: { chatId: string; sessionId: string; onSwitchChat: (chatId:
     });
 
     es.addEventListener('delta', (ev: any) => {
-      onAny(ev);
+      onAny(ev, 'delta');
+      setLastDeltaAt(nowTs());
       try {
         const data = JSON.parse(ev.data || '{}');
         const mid = String(data.assistantMessageId || '');
@@ -642,8 +712,29 @@ function Chat(props: { chatId: string; sessionId: string; onSwitchChat: (chatId:
       } catch {}
     });
 
+    es.addEventListener('progress', (ev: any) => {
+      onAny(ev, 'progress');
+      try {
+        const data = JSON.parse(ev.data || '{}');
+        const stage = typeof data.stage === 'string' ? data.stage : 'progress';
+        const message = typeof data.message === 'string' ? data.message : JSON.stringify(data);
+        pushActivity({ source: 'progress', stage, message });
+      } catch {
+        pushActivity({ source: 'progress', stage: 'progress', message: String(ev?.data || '') });
+      }
+    });
+
+    es.addEventListener('codex_event', (ev: any) => {
+      onAny(ev, 'codex_event');
+      try {
+        const data = JSON.parse(ev.data || 'null');
+        const s = summarizeCodexEvent(data);
+        if (s) pushActivity({ source: 'codex_event', stage: s.stage, message: s.message });
+      } catch {}
+    });
+
     es.addEventListener('approval_request', (ev: any) => {
-      onAny(ev);
+      onAny(ev, 'approval_request');
       try {
         const data = JSON.parse(ev.data || '{}');
         setApproval(data);
@@ -651,7 +742,7 @@ function Chat(props: { chatId: string; sessionId: string; onSwitchChat: (chatId:
     });
 
     const finish = async (kind: 'done' | 'turn_error', ev: any) => {
-      onAny(ev);
+      onAny(ev, kind);
       setBusy(false);
       closeStream();
       setStreamStatus('connected');
@@ -671,6 +762,8 @@ function Chat(props: { chatId: string; sessionId: string; onSwitchChat: (chatId:
         const { sandbox: _s, approvalPolicy: _a, ...savedSettings } = c2.settings || {};
         setSettings(savedSettings);
         if (rt2?.ok && typeof rt2.updatedAt === 'number') setLastUpdateAt(rt2.updatedAt);
+        if (rt2?.ok && typeof rt2.status === 'string') setRuntimeStatus(rt2.status);
+        if (rt2?.ok && typeof rt2.lastEventId === 'number') setRuntimeLastEventId(rt2.lastEventId);
         void refreshChatList();
       } catch {}
     };
@@ -686,8 +779,52 @@ function Chat(props: { chatId: string; sessionId: string; onSwitchChat: (chatId:
     es.addEventListener('error', () => {
       // Transport-level error; EventSource will retry automatically.
       setStreamStatus('reconnecting');
+      setStreamErrorCount((c) => c + 1);
+      setStreamErrorAt(nowTs());
       if (busyRef.current) startPolling();
     });
+  };
+
+  const syncNow = async () => {
+    try {
+      setErr(null);
+      setUiStatus('Syncing...');
+      const [c2, rt2] = await Promise.all([getChat(props.chatId), getChatRuntime(props.chatId)]);
+      setMessages(c2.messages);
+      const { sandbox: _s, approvalPolicy: _a, ...savedSettings } = c2.settings || {};
+      setSettings(savedSettings);
+      if (rt2?.ok && typeof rt2.updatedAt === 'number') setLastUpdateAt(rt2.updatedAt);
+      if (rt2?.ok && typeof rt2.status === 'string') setRuntimeStatus(rt2.status);
+      if (rt2?.ok && typeof rt2.lastEventId === 'number') setRuntimeLastEventId(rt2.lastEventId);
+      setPollOkAt(nowTs());
+      void refreshChatList();
+    } catch (e: any) {
+      setErr(String(e?.message || e));
+    } finally {
+      setUiStatus('');
+    }
+  };
+
+  const reconnectNow = async () => {
+    try {
+      setErr(null);
+      const rt = await getChatRuntime(props.chatId).catch(() => ({ ok: false } as any));
+      if (rt?.ok && typeof rt.updatedAt === 'number') setLastUpdateAt(rt.updatedAt);
+      if (rt?.ok && typeof rt.status === 'string') setRuntimeStatus(rt.status);
+      const rtEid = rt?.ok && typeof rt.lastEventId === 'number' ? rt.lastEventId : 0;
+      if (rtEid) setRuntimeLastEventId(rtEid);
+
+      const after = Math.max(0, lastEventIdRef.current || 0, rtEid || 0, runtimeLastEventId || 0);
+      lastEventIdRef.current = after;
+      connectStream(after);
+
+      if (rt?.ok && rt.status === 'running') {
+        setBusy(true);
+        startPolling();
+      }
+    } catch (e: any) {
+      setErr(String(e?.message || e));
+    }
   };
 
   useEffect(() => {
@@ -700,6 +837,16 @@ function Chat(props: { chatId: string; sessionId: string; onSwitchChat: (chatId:
   }, [busy]);
 
   useEffect(() => {
+    if (!busy) {
+      setUiNow(0);
+      return;
+    }
+    setUiNow(Date.now());
+    const t = window.setInterval(() => setUiNow(Date.now()), 1000);
+    return () => window.clearInterval(t);
+  }, [busy]);
+
+  useEffect(() => {
     let cancelled = false;
     (async () => {
       setErr(null);
@@ -707,6 +854,21 @@ function Chat(props: { chatId: string; sessionId: string; onSwitchChat: (chatId:
       setApproval(null);
       setStreamStatus('connected');
       setQueuedPrompts([]);
+      setRenderCount(INITIAL_RENDER_COUNT);
+      setRuntimeStatus('');
+      setRuntimeLastEventId(0);
+      setLastUpdateAt(0);
+      setLastSseEventAt(0);
+      setLastSseEventId(0);
+      setLastSseEventName('');
+      setLastDeltaAt(0);
+      setActivity([]);
+      setActivityOpen(true);
+      setPollOkAt(0);
+      setPollErrorCount(0);
+      setPollErrorAt(0);
+      setStreamErrorCount(0);
+      setStreamErrorAt(0);
       startTurnRef.current = false;
       const chat = await getChat(props.chatId);
       if (cancelled) return;
@@ -741,6 +903,8 @@ function Chat(props: { chatId: string; sessionId: string; onSwitchChat: (chatId:
       const rt = await getChatRuntime(props.chatId).catch(() => ({ ok: false } as any));
       if (cancelled) return;
       if (rt?.ok && typeof rt.updatedAt === 'number') setLastUpdateAt(rt.updatedAt);
+      if (rt?.ok && typeof rt.status === 'string') setRuntimeStatus(rt.status);
+      if (rt?.ok && typeof rt.lastEventId === 'number') setRuntimeLastEventId(rt.lastEventId);
       if (rt?.ok && rt.status === 'running') {
         setBusy(true);
         // If a browser refresh happens mid-run, chat already contains partial text.
@@ -757,6 +921,36 @@ function Chat(props: { chatId: string; sessionId: string; onSwitchChat: (chatId:
       closeStream();
     };
   }, [props.chatId]);
+
+  const renderStart = Math.max(0, messages.length - renderCount);
+  const visibleMessages = messages.slice(renderStart);
+  const nowForUi = uiNow || Date.now();
+
+  const onChatScroll = () => {
+    const el = chatRef.current;
+    if (!el) return;
+
+    // Near-top threshold to trigger history expansion.
+    if (el.scrollTop > 80) return;
+    if (renderStart <= 0) return;
+    if (historyLoadingRef.current) return;
+
+    historyLoadingRef.current = true;
+    historyLoadRef.current = { prevScrollHeight: el.scrollHeight, prevScrollTop: el.scrollTop };
+    setRenderCount((c) => Math.min(messages.length, c + LOAD_MORE_COUNT));
+  };
+
+  useLayoutEffect(() => {
+    const el = chatRef.current;
+    const pending = historyLoadRef.current;
+    if (!el || !pending) return;
+
+    const delta = el.scrollHeight - pending.prevScrollHeight;
+    el.scrollTop = pending.prevScrollTop + delta;
+
+    historyLoadRef.current = null;
+    historyLoadingRef.current = false;
+  }, [renderCount]);
 
   useEffect(() => {
     // Persist user preference; default collapsed to prioritize chat.
@@ -902,6 +1096,8 @@ function Chat(props: { chatId: string; sessionId: string; onSwitchChat: (chatId:
         try {
           const rt = await getChatRuntime(props.chatId);
           if (rt.ok && typeof rt.updatedAt === 'number') setLastUpdateAt(rt.updatedAt);
+          if (rt.ok && typeof rt.status === 'string') setRuntimeStatus(rt.status);
+          if (rt.ok && typeof rt.lastEventId === 'number') setRuntimeLastEventId(rt.lastEventId);
           if (rt.ok && rt.status !== 'running') setBusy(false);
         } catch {}
       }, 1500);
@@ -1277,6 +1473,32 @@ function Chat(props: { chatId: string; sessionId: string; onSwitchChat: (chatId:
           </div>
 
           <div className="ctl">
+            <div className="ctl-label">Diagnostics</div>
+            <div className="badge badge-tight">{`rt=${runtimeStatus || (busy ? 'running' : 'idle')}`}</div>
+            <div className="badge badge-tight">{`rt_eid=${runtimeLastEventId || 0}`}</div>
+            <div className="badge badge-tight">{`stream=${streamStatus}`}</div>
+            <div className="badge badge-tight">{`es=${esRef.current ? esRef.current.readyState : 'n/a'}`}</div>
+            <div className="badge badge-tight">
+              {`sse=${lastSseEventName || 'none'}/${lastSseEventId || 0} ${lastSseEventAt ? Math.max(0, Math.round((nowForUi - lastSseEventAt) / 1000)) : '?'}s ago`}
+            </div>
+            <div className="badge badge-tight">
+              {`poll_ok=${pollOkAt ? Math.max(0, Math.round((nowForUi - pollOkAt) / 1000)) : '?'}s poll_err=${pollErrorCount}`}
+            </div>
+            <div className="badge badge-tight">
+              {`poll_err_ago=${pollErrorAt ? Math.max(0, Math.round((nowForUi - pollErrorAt) / 1000)) : '?'}s`}
+            </div>
+            <div className="badge badge-tight">
+              {`stream_err=${streamErrorCount} err_ago=${streamErrorAt ? Math.max(0, Math.round((nowForUi - streamErrorAt) / 1000)) : '?'}s`}
+            </div>
+            <button className="btn btn-secondary btn-sm" onClick={() => void syncNow()}>
+              Sync
+            </button>
+            <button className="btn btn-secondary btn-sm" onClick={() => void reconnectNow()}>
+              Reconnect
+            </button>
+          </div>
+
+          <div className="ctl">
             <div className="ctl-label">CWD</div>
             <input
               className="input input-sm"
@@ -1401,8 +1623,8 @@ function Chat(props: { chatId: string; sessionId: string; onSwitchChat: (chatId:
           </div>
         ) : null}
 
-        <div className="chat">
-          {messages.map((m) => (
+        <div className="chat" ref={chatRef} onScroll={onChatScroll}>
+          {visibleMessages.map((m) => (
             <div key={m.id} className={`msg ${m.role}`}>
               <div className="role">{m.role}</div>
               <pre className="bubble">{normalizeStreamText(m.text)}</pre>
@@ -1445,10 +1667,35 @@ function Chat(props: { chatId: string; sessionId: string; onSwitchChat: (chatId:
           {busy ? (
             <span className="muted">
               {' '}
-              (running, stream={streamStatus}, last update {lastUpdateAt ? Math.max(0, Math.round((Date.now() - lastUpdateAt) / 1000)) : '?'}s ago)
+              (running, rt={runtimeStatus || 'running'}, eid={runtimeLastEventId || 0}, stream={streamStatus}, last update{' '}
+              {lastUpdateAt ? Math.max(0, Math.round((nowForUi - lastUpdateAt) / 1000)) : '?'}s, last SSE{' '}
+              {lastSseEventAt ? Math.max(0, Math.round((nowForUi - lastSseEventAt) / 1000)) : '?'}s, last delta{' '}
+              {lastDeltaAt ? Math.max(0, Math.round((nowForUi - lastDeltaAt) / 1000)) : '?'}s, poll_err=
+              {pollErrorCount}, stream_err={streamErrorCount})
             </span>
           ) : null}
         </div>
+        {busy && activity.length > 0 ? (
+          <div className="activity">
+            <div className="activity-head">
+              <div className="activity-title">Activity</div>
+              <button className="btn btn-secondary btn-sm" onClick={() => setActivityOpen((v) => !v)}>
+                {activityOpen ? 'Hide' : 'Show'}
+              </button>
+            </div>
+            {activityOpen ? (
+              <div className="activity-body">
+                {activity.slice(-10).map((a, idx) => (
+                  <div className="activity-item" key={`act-${a.ts}-${idx}-${a.stage}`}>
+                    <span className="activity-ago">{Math.max(0, Math.round((nowForUi - a.ts) / 1000))}s</span>
+                    <span className="activity-stage">{a.stage}</span>
+                    <span className="activity-msg">{a.message}</span>
+                  </div>
+                ))}
+              </div>
+            ) : null}
+          </div>
+        ) : null}
         {queuedPrompts.length > 0 ? (
           <div className="queue-panel">
             <div className="queue-head">

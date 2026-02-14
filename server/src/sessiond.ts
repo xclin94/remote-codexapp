@@ -13,6 +13,10 @@ type StreamEvent = {
   ts: number;
 };
 
+function isProgressMsg(msg: unknown): msg is { type: 'progress'; stage?: unknown; message?: unknown; detail?: unknown } {
+  return typeof msg === 'object' && msg !== null && (msg as any).type === 'progress';
+}
+
 type ChatStream = {
   status: 'idle' | 'running' | 'done' | 'error';
   nextId: number;
@@ -191,6 +195,16 @@ app.post('/v1/chats/start', (req, res) => {
           }
           if (e.type === 'approval_request') {
             appendStreamEvent(sessionId, chatId, 'approval_request', e.request);
+            return;
+          }
+          if (e.type === 'raw' && isProgressMsg(e.msg)) {
+            const stage = typeof (e.msg as any).stage === 'string' ? String((e.msg as any).stage) : 'progress';
+            const message = typeof (e.msg as any).message === 'string' ? String((e.msg as any).message) : '';
+            appendStreamEvent(sessionId, chatId, 'progress', {
+              stage,
+              message,
+              detail: (e.msg as any).detail ?? null
+            });
             return;
           }
           appendStreamEvent(sessionId, chatId, 'codex_event', e.msg);
