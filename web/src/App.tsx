@@ -1155,7 +1155,7 @@ function Chat(props: { chatId: string; sessionId: string; onSwitchChat: (chatId:
 
         const rawKeep = args.trim();
         const parsedKeep = rawKeep ? Number(rawKeep) : null;
-        if (rawKeep && (!Number.isFinite(parsedKeep) || parsedKeep < 0)) {
+        if (rawKeep && (parsedKeep === null || !Number.isFinite(parsedKeep) || parsedKeep < 0)) {
           addSystem('Usage: /compact [keep_last]');
           setText('');
           return;
