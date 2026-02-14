@@ -693,6 +693,31 @@ export class MemoryStore {
     this.markForPersist();
   }
 
+  replaceMessages(sessionId: string, chatId: string, messages: ChatMessage[]): ChatMessage[] {
+    const chat = this.getChat(sessionId, chatId);
+    if (!chat) throw new Error('chat_not_found');
+    const now = this.now();
+    const safe = Array.isArray(messages)
+      ? messages
+        .map((m, i): ChatMessage => {
+          const role = m?.role === 'user' || m?.role === 'assistant' || m?.role === 'system'
+            ? m.role
+            : 'system';
+          const text = typeof m?.text === 'string' ? m.text : '';
+          return {
+            id: typeof m?.id === 'string' && m.id ? m.id : `msg-${now}-${i}`,
+            role,
+            text,
+            createdAt: typeof m?.createdAt === 'number' && Number.isFinite(m.createdAt) ? m.createdAt : now
+          };
+        })
+      : [];
+    chat.messages = safe;
+    chat.updatedAt = now;
+    this.markForPersist();
+    return chat.messages;
+  }
+
   createTerminalSession(sid: string, cwd: string): TerminalSessionRecord {
     const record: TerminalSessionRecord = {
       id: `terminal_${nanoid(9)}`,

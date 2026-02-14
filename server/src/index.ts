@@ -17,7 +17,12 @@ import pty, { type IPty } from 'node-pty';
 import { WebSocketServer, type RawData, type WebSocket } from 'ws';
 
 import { readEnv } from './config.js';
-import { MemoryStore, type StreamEvent, type TerminalSessionRecord } from './store.js';
+import {
+  MemoryStore,
+  type ChatMessage,
+  type StreamEvent,
+  type TerminalSessionRecord
+} from './store.js';
 import { SessiondClient } from './sessiondClient.js';
 
 const serverRootDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -79,7 +84,49 @@ const terminalWss = new WebSocketServer({ noServer: true });
 
 const CLI_HISTORY_CACHE_TTL_MS = 30_000;
 const CLI_HISTORY_SCAN_FILE_LIMIT = 200;
+const COMPACT_KEEP_LAST_DEFAULT = 8;
+const COMPACT_SUMMARY_MAX_CHARS = 2_000;
 let cliHistorySnapshotCache: { expiresAt: number; snapshot: CliHistoryStatusSnapshot | null } | null = null;
+
+function normalizeCompactKeep(value: unknown): number {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return COMPACT_KEEP_LAST_DEFAULT;
+  return Math.max(0, Math.floor(n));
+}
+
+function summarizeChatForCompact(messages: ChatMessage[]): string {
+  const safe = Array.isArray(messages) ? messages : [];
+  if (safe.length === 0) return '';
+  const raw = safe
+    .map((m) => {
+      const role = m.role === 'system' || m.role === 'assistant' || m.role === 'user' ? m.role : 'assistant';
+      const text = typeof m.text === 'string' ? m.text : '';
+      const clipped = text.length > 260 ? `${text.slice(0, 257)}...` : text;
+      return `[${role}] ${clipped}`;
+    })
+    .join('\n');
+  return raw.length > COMPACT_SUMMARY_MAX_CHARS ? `${raw.slice(0, COMPACT_SUMMARY_MAX_CHARS)}...` : raw;
+}
+
+function buildCompactedMessages(messages: ChatMessage[], keepLast: number): { messages: ChatMessage[]; removedCount: number } {
+  const history = Array.isArray(messages) ? messages : [];
+  const keep = normalizeCompactKeep(keepLast) > 0 ? history.slice(-normalizeCompactKeep(keepLast)) : [];
+  const toCompact = history.length > keep.length ? history.slice(0, history.length - keep.length) : [];
+  if (toCompact.length === 0) return { messages: keep, removedCount: 0 };
+
+  const summaryText = summarizeChatForCompact(toCompact);
+  const compactSummary: ChatMessage = {
+    id: `compact-${Date.now()}`,
+    role: 'system',
+    text: `Conversation compacted. Summary of ${toCompact.length} earlier messages:\n${summaryText}`,
+    createdAt: Date.now()
+  };
+
+  return {
+    messages: [compactSummary, ...keep],
+    removedCount: toCompact.length
+  };
+}
 
 function parseCookieHeader(raw: string | undefined): Record<string, string> {
   if (!raw) return {};
@@ -1760,6 +1807,10 @@ const SettingsSchema = z.object({
   approvalPolicy: z.union([z.enum(['untrusted', 'on-failure', 'on-request', 'never']), z.null()]).optional()
 });
 
+const CompactSchema = z.object({
+  keep_last: z.number().int().min(0).max(300).optional()
+});
+
 const ActiveChatSchema = z.object({
   chatId: z.string().min(1)
 });
@@ -1939,6 +1990,35 @@ app.post('/api/chats/:chatId/reset', async (req, res) => {
   if (!chat) return res.status(404).json({ ok: false, error: 'not_found' });
   await codex.reset(sid, chatId);
   res.json({ ok: true });
+});
+
+app.post('/api/chats/:chatId/compact', async (req, res) => {
+  const sid = requireAuth(req, res);
+  if (!sid) return;
+
+  const chatId = req.params.chatId;
+  const chat = store.getChat(sid, chatId);
+  if (!chat) return res.status(404).json({ ok: false, error: 'not_found' });
+
+  const stream = store.getStreamRuntime(sid, chatId);
+  if (stream.status === 'running') return res.status(409).json({ ok: false, error: 'chat_busy' });
+
+  const parsed = CompactSchema.safeParse(req.body || {});
+  if (!parsed.success) return res.status(400).json({ ok: false, error: 'bad_request' });
+
+  const { keep_last: keepLast } = parsed.data;
+  const compacted = buildCompactedMessages(chat.messages, keepLast ?? COMPACT_KEEP_LAST_DEFAULT);
+  if (compacted.messages.length === 0 || compacted.removedCount === 0) {
+    return res.json({ ok: true, compacted: false, removedCount: 0 });
+  }
+
+  store.replaceMessages(sid, chatId, compacted.messages);
+  res.json({
+    ok: true,
+    compacted: true,
+    removedCount: compacted.removedCount,
+    keptCount: compacted.messages.length
+  });
 });
 
 app.post('/api/chats/:chatId/abort', async (req, res) => {

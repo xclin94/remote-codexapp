@@ -319,6 +319,25 @@ export async function sendMessageAsync(chatId: string, text: string, model?: str
   return j;
 }
 
+export async function compactChat(
+  chatId: string,
+  keepLast?: number
+): Promise<{ ok: boolean; removedCount?: number; keptCount?: number; compacted?: boolean; error?: string }> {
+  const r = await fetch(apiUrl(`/api/chats/${encodeURIComponent(chatId)}/compact`), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    credentials: 'include',
+    body: JSON.stringify({
+      keep_last: typeof keepLast === 'number' && Number.isFinite(keepLast)
+        ? Math.max(0, Math.floor(keepLast))
+        : undefined
+    })
+  });
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) return { ok: false, error: j.error || `http_${r.status}` };
+  return j;
+}
+
 export async function updateChatSettings(chatId: string, patch: ChatSettingsPatch): Promise<void> {
   const r = await fetch(apiUrl(`/api/chats/${encodeURIComponent(chatId)}/settings`), {
     method: 'POST',

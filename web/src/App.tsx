@@ -18,6 +18,7 @@ import {
   getDefaults,
   listTerminals,
   listChats,
+  compactChat,
   getStatus,
   getTotpStatus,
   getTotpUri,
@@ -1141,9 +1142,38 @@ function Chat(props: { chatId: string; sessionId: string; onSwitchChat: (chatId:
         return;
       }
       if (cmd === 'web' && args.toLowerCase() === 'help') {
-        addSystem('Web commands: /resume, /web help');
+        addSystem('Web commands: /resume, /compact [keep_last], /web help');
         setText('');
         return;
+      }
+      if (cmd === 'compact') {
+        if (busy || startTurnRef.current) {
+          addSystem('Cannot compact while a turn is running.');
+          setText('');
+          return;
+        }
+
+        const rawKeep = args.trim();
+        const parsedKeep = rawKeep ? Number(rawKeep) : null;
+        if (rawKeep && (!Number.isFinite(parsedKeep) || parsedKeep < 0)) {
+          addSystem('Usage: /compact [keep_last]');
+          setText('');
+          return;
+        }
+        try {
+          const r = await compactChat(props.chatId, parsedKeep ?? undefined);
+          if (!r.ok) {
+            setErr(r.error || 'compact_failed');
+            return;
+          }
+          await syncNow();
+          addSystem(`OK: compact complete (removed ${r.removedCount || 0} messages).`);
+        } catch (e: any) {
+          setErr(String(e?.message || e));
+        } finally {
+          setText('');
+          return;
+        }
       }
     }
 
@@ -1548,6 +1578,25 @@ function Chat(props: { chatId: string; sessionId: string; onSwitchChat: (chatId:
               }}
             >
               Reset
+            </button>
+            <button
+              className="btn btn-secondary btn-sm"
+              disabled={busy}
+              onClick={async () => {
+                try {
+                  const r = await compactChat(props.chatId);
+                  if (!r.ok) {
+                    setErr(r.error || 'compact_failed');
+                    return;
+                  }
+                  await syncNow();
+                  addSystem(`OK: compact complete (removed ${r.removedCount || 0} messages).`);
+                } catch (e: any) {
+                  setErr(String(e?.message || e));
+                }
+              }}
+            >
+              Compact
             </button>
             <button
               className="btn btn-secondary btn-sm"
