@@ -2022,8 +2022,13 @@ function Chat(props: { chatId: string; sessionId: string; onSwitchChat: (chatId:
 
         <div className="composer">
           {fullscreenMode && isMobileLayout ? (
-            <button className="composer-input-trigger" type="button" onClick={openFullscreenComposer}>
-              {text.trim() ? normalizeStreamText(text) : 'Tap to type your message'}
+            <button
+              className="composer-input-trigger"
+              type="button"
+              aria-label="Open message input"
+              onClick={openFullscreenComposer}
+            >
+              {text.trim() ? normalizeStreamText(text) : ''}
             </button>
           ) : (
             <textarea

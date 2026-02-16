@@ -1042,8 +1042,28 @@ body {
   .session-tab {
     max-width: 100%;
   }
+  .page-chat.fullscreen-mode .composer {
+    grid-template-columns: 1fr;
+    gap: 8px;
+    padding: 10px;
+    padding-bottom: calc(10px + env(safe-area-inset-bottom, 0px));
+  }
+  .page-chat.fullscreen-mode .composer-actions {
+    width: 100%;
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 6px;
+  }
+  .page-chat.fullscreen-mode .composer-actions .btn {
+    width: 100%;
+    min-width: 0;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+    overflow: hidden;
+  }
   .composer-input-trigger {
-    min-height: 104px;
+    min-height: 72px;
+    max-height: 120px;
     font-size: 14px;
   }
   .fullscreen-input-overlay {
@@ -1053,10 +1073,11 @@ body {
   .fullscreen-input-modal {
     width: 100%;
     border-radius: 14px;
-    padding: 14px;
+    padding: 12px;
+    max-height: min(66dvh, 420px);
   }
   .fullscreen-input-textarea {
-    height: min(60dvh, 460px);
-    min-height: min(60dvh, 460px);
+    height: min(40dvh, 300px);
+    min-height: min(40dvh, 300px);
   }
 }
