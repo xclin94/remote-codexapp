@@ -54,6 +54,7 @@ const REASONING_VALUES: ReasoningEffort[] = ['low', 'medium', 'high', 'xhigh'];
 const LOCKED_SANDBOX = 'danger-full-access';
 const LOCKED_APPROVAL_POLICY = 'never';
 const QUEUED_PROMPTS_KEY_PREFIX = 'codex:queuedPrompts:';
+const FULLSCREEN_DESKTOP_KEY = 'codex:fullscreenDesktop';
 const INSTANCE_OPTIONS: { label: string; origin: string; path: string }[] = [
   { label: 'conknow.cc', origin: 'https://conknow.cc', path: '/codex' },
   { label: 'conknow.app', origin: 'https://www.conknow.app', path: '/codex' }
@@ -483,10 +484,11 @@ function Chat(props: { chatId: string; sessionId: string; onSwitchChat: (chatId:
   const [fullscreenMode, setFullscreenMode] = useState<boolean>(() => {
     if (typeof window === 'undefined') return false;
     try {
-      const raw = window.localStorage.getItem('fullscreenMode');
+      if (window.matchMedia('(max-width: 760px)').matches) return true;
+      const raw = window.localStorage.getItem(FULLSCREEN_DESKTOP_KEY);
       if (raw === '1') return true;
       if (raw === '0') return false;
-      return window.matchMedia('(max-width: 720px)').matches;
+      return false;
     } catch {
       return false;
     }
@@ -586,6 +588,20 @@ function Chat(props: { chatId: string; sessionId: string; onSwitchChat: (chatId:
 
   useEffect(() => {
     if (!isMobileLayout) setMobileChatListOpen(false);
+  }, [isMobileLayout]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    if (isMobileLayout) {
+      setFullscreenMode(true);
+      return;
+    }
+    try {
+      const raw = window.localStorage.getItem(FULLSCREEN_DESKTOP_KEY);
+      setFullscreenMode(raw === '1');
+    } catch {
+      setFullscreenMode(false);
+    }
   }, [isMobileLayout]);
 
   const refreshTerminals = async () => {
@@ -1065,10 +1081,10 @@ function Chat(props: { chatId: string; sessionId: string; onSwitchChat: (chatId:
   }, [controlsOpen]);
 
   useEffect(() => {
-    if (typeof window !== 'undefined') {
-      window.localStorage.setItem('fullscreenMode', fullscreenMode ? '1' : '0');
-    }
-  }, [fullscreenMode]);
+    if (typeof window === 'undefined') return;
+    if (isMobileLayout) return;
+    window.localStorage.setItem(FULLSCREEN_DESKTOP_KEY, fullscreenMode ? '1' : '0');
+  }, [fullscreenMode, isMobileLayout]);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
