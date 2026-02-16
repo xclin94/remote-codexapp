@@ -92,6 +92,17 @@ body {
   display: none;
 }
 
+.page-chat.fullscreen-mode .textarea {
+  height: 116px;
+  font-size: 14px;
+}
+
+.page-chat.fullscreen-mode .composer .btn {
+  padding: 8px 10px;
+  border-radius: 10px;
+  font-size: 12px;
+}
+
 .card {
   width: min(720px, 100%);
   background: var(--panel);
