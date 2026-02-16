@@ -25,6 +25,13 @@ const EnvSchema = z.object({
     z.enum(['low', 'medium', 'high', 'xhigh']).default('xhigh')
   ),
   CODEX_CWD: z.string().default(process.cwd()),
+  // Chat working directory strategy:
+  // - isolated: each chat gets its own folder (recommended for concurrency)
+  // - shared: chats default to CODEX_CWD unless user overrides
+  CHAT_CWD_MODE: z.preprocess(emptyToUndefined, z.enum(['shared', 'isolated']).default('isolated')),
+  // Base directory for isolated chat workspaces.
+  // If unset, defaults to <CODEX_CWD>/.codex-remoteapp/chats
+  CHAT_WORKSPACES_DIR: z.preprocess(emptyToUndefined, z.string().optional()),
   // Allowed roots for the web UI directory picker (comma-separated absolute paths).
   // If unset, defaults to CODEX_CWD.
   CWD_ROOTS: z.preprocess(emptyToUndefined, z.string().optional()),

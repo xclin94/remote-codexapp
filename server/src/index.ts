@@ -8,6 +8,7 @@ import fs from 'node:fs';
 import net from 'node:net';
 import os from 'node:os';
 import crypto from 'node:crypto';
+import { spawnSync } from 'node:child_process';
 import type { IncomingMessage } from 'node:http';
 import { fileURLToPath } from 'node:url';
 import { z } from 'zod';
@@ -988,6 +989,21 @@ async function getCliStatusUsage(fallbackUsage: CliStatusUsageFallback = {}): Pr
   }
 }
 
+function getCodexLoginStatusText(): string | null {
+  try {
+    const run = spawnSync('codex', ['login', 'status'], {
+      encoding: 'utf8',
+      timeout: 1200
+    });
+    const out = `${run.stdout || ''}${run.stderr || ''}`.trim();
+    if (!out) return null;
+    const firstLine = out.split(/\r?\n/).map((line) => line.trim()).find(Boolean);
+    return firstLine || null;
+  } catch {
+    return null;
+  }
+}
+
 function parseReasoningEffort(v: unknown): ReasoningEffort | null {
   if (v === 'low' || v === 'medium' || v === 'high' || v === 'xhigh') return v;
   return null;
@@ -1196,19 +1212,26 @@ app.get('/api/status', async (req, res) => {
   const chats = store.listChats(sid);
   const runtimeByChat = await Promise.all(
     chats.map(async (c) => {
-      const rt = await reconcileRuntimeStatus(sid, c.id);
-      const usage = await codex.getChatUsage(sid, c.id);
+      const [rt, usage, sessionState] = await Promise.all([
+        reconcileRuntimeStatus(sid, c.id),
+        codex.getChatUsage(sid, c.id),
+        codex.getChatSessionState(sid, c.id).catch(() => null)
+      ]);
       return {
         id: c.id,
         status: rt.status,
         updatedAt: c.updatedAt,
-        usage: usage || undefined
+        usage: usage || undefined,
+        codexSessionId: sessionState?.sessionId || undefined
       };
     })
   );
   const runningCount = runtimeByChat.filter((x) => x.status === 'running').length;
   const localUsage = localUsageAgg.usage || undefined;
   const cliStatusUsage = await getCliStatusUsage(localUsageAgg);
+  const activeChatId = session.activeChatId || null;
+  const activeRuntime = activeChatId ? runtimeByChat.find((item) => item.id === activeChatId) : null;
+  const accountStatus = getCodexLoginStatusText();
 
   res.json({
     ok: true,
@@ -1217,6 +1240,8 @@ app.get('/api/status', async (req, res) => {
     cliUsage: cliStatusUsage.usage || undefined,
     cliRateLimits: cliStatusUsage.rateLimits || undefined,
     cliUsageError: cliStatusUsage.error,
+    accountStatus: accountStatus || undefined,
+    collaborationMode: 'Default',
     defaults: {
       model: env.CODEX_MODEL || null,
       reasoningEffort: env.CODEX_REASONING_EFFORT || null,
@@ -1228,7 +1253,8 @@ app.get('/api/status', async (req, res) => {
       id: session.id,
       createdAt: session.createdAt,
       expiresAt: session.expiresAt,
-      activeChatId: session.activeChatId || null
+      activeChatId,
+      codexSessionId: activeRuntime?.codexSessionId || null
     },
     chats: {
       total: chats.length,
@@ -1320,9 +1346,79 @@ function expandUserPath(p: string): string {
     .replace(/\$HOME\b/g, home);
 }
 
+const chatWorkspaceBaseDir = (() => {
+  const raw = env.CHAT_WORKSPACES_DIR?.trim();
+  const fallback = path.join(env.CODEX_CWD, '.codex-remoteapp', 'chats');
+  const candidate = raw ? expandUserPath(raw) : fallback;
+  const abs = path.isAbsolute(candidate) ? path.resolve(candidate) : path.resolve(env.CODEX_CWD, candidate);
+  if (env.CHAT_CWD_MODE === 'isolated') {
+    try {
+      fs.mkdirSync(abs, { recursive: true });
+    } catch (e: any) {
+      const msg = e?.message ? String(e.message) : 'mkdir_failed';
+      console.warn(`[server] chat workspace root unavailable (${abs}): ${msg}`);
+    }
+  }
+  return abs;
+})();
+
+function toSafePathSegment(input: string, fallback: string): string {
+  const safe = input
+    .replace(/[^a-zA-Z0-9._-]+/g, '_')
+    .replace(/^_+/, '')
+    .replace(/_+$/, '');
+  return safe || fallback;
+}
+
+function getIsolatedChatCwd(sessionId: string, chatId: string): string {
+  const sid = toSafePathSegment(sessionId, 'sid').slice(0, 24);
+  const cid = toSafePathSegment(chatId, 'chat');
+  return path.join(chatWorkspaceBaseDir, sid, cid);
+}
+
+function ensureChatWorkingDirectory(
+  sessionId: string,
+  chat: { id: string; settings?: { cwd?: string } }
+): string {
+  const explicit = typeof chat.settings?.cwd === 'string' ? chat.settings.cwd.trim() : '';
+  if (explicit) return explicit;
+  if (env.CHAT_CWD_MODE !== 'isolated') return env.CODEX_CWD;
+
+  const target = getIsolatedChatCwd(sessionId, chat.id);
+  try {
+    fs.mkdirSync(target, { recursive: true });
+    store.updateChatSettings(sessionId, chat.id, { cwd: target });
+    return target;
+  } catch (e: any) {
+    const msg = e?.message ? String(e.message) : 'set_cwd_failed';
+    console.warn(`[server] failed to provision chat cwd for ${sessionId}:${chat.id}: ${msg}`);
+    return env.CODEX_CWD;
+  }
+}
+
+function backfillChatWorkingDirectories(): void {
+  if (env.CHAT_CWD_MODE !== 'isolated') return;
+  let assigned = 0;
+  for (const session of store.getAllSessions()) {
+    for (const item of store.listChats(session.id)) {
+      const chat = store.getChat(session.id, item.id);
+      if (!chat) continue;
+      const had = typeof chat.settings?.cwd === 'string' && chat.settings.cwd.trim().length > 0;
+      if (had) continue;
+      const cwd = ensureChatWorkingDirectory(session.id, chat);
+      if (cwd !== env.CODEX_CWD) assigned += 1;
+    }
+  }
+  if (assigned > 0) {
+    console.log(`[server] Chat isolation: assigned dedicated cwd for ${assigned} chat(s) under ${chatWorkspaceBaseDir}`);
+  }
+}
+
 function computeCwdRoots(): { abs: string; real: string; label: string }[] {
-  const raw = env.CWD_ROOTS ? env.CWD_ROOTS.split(',').map((s) => s.trim()).filter(Boolean) : [env.CODEX_CWD];
-  const abs = raw.map((p) => {
+  const configured = env.CWD_ROOTS ? env.CWD_ROOTS.split(',').map((s) => s.trim()).filter(Boolean) : [env.CODEX_CWD];
+  const raw = env.CHAT_CWD_MODE === 'isolated' ? [...configured, chatWorkspaceBaseDir] : configured;
+  const deduped = Array.from(new Set(raw));
+  const abs = deduped.map((p) => {
     const x = expandUserPath(p);
     return path.isAbsolute(x) ? x : path.resolve(x);
   });
@@ -1333,7 +1429,8 @@ function computeCwdRoots(): { abs: string; real: string; label: string }[] {
       const st = fs.statSync(p);
       if (!st.isDirectory()) continue;
       const real = fs.realpathSync(p);
-      out.push({ abs: p, real, label: p === env.CODEX_CWD ? 'Default' : path.basename(p) || p });
+      const label = p === env.CODEX_CWD ? 'Default' : p === chatWorkspaceBaseDir ? 'Chats' : path.basename(p) || p;
+      out.push({ abs: p, real, label });
     } catch {
       // ignore invalid roots
     }
@@ -1351,6 +1448,7 @@ function computeCwdRoots(): { abs: string; real: string; label: string }[] {
 }
 
 const cwdRoots = computeCwdRoots();
+backfillChatWorkingDirectories();
 
 function isWithinRoot(real: string, rootReal: string): boolean {
   if (real === rootReal) return true;
@@ -1514,7 +1612,8 @@ app.post('/api/chats', (req, res) => {
   const sid = requireAuth(req, res);
   if (!sid) return;
   const chat = store.createChat(sid);
-  res.json({ ok: true, chatId: chat.id });
+  const cwd = ensureChatWorkingDirectory(sid, chat);
+  res.json({ ok: true, chatId: chat.id, cwd });
 });
 
 const terminalRouteSchema = z.object({
@@ -1844,6 +1943,7 @@ async function startChatTurn(opts: { sid: string; chatId: string; text: string; 
   codex.resetKnownCursor(opts.sid, opts.chatId);
 
   const settings = chat.settings || {};
+  const chatCwd = ensureChatWorkingDirectory(opts.sid, chat);
   const key = `${opts.sid}:${opts.chatId}`;
   void (async () => {
     localTurnPumps.add(key);
@@ -1854,7 +1954,7 @@ async function startChatTurn(opts: { sid: string; chatId: string; text: string; 
         prompt: opts.text,
         assistantMessageId: assistantMsg.id,
         config: {
-          cwd: settings.cwd || env.CODEX_CWD,
+          cwd: chatCwd,
           sandbox: env.CODEX_SANDBOX,
           approvalPolicy: env.CODEX_APPROVAL_POLICY,
           model: opts.model || settings.model || env.CODEX_MODEL,
