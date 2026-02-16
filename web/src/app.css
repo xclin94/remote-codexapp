@@ -434,6 +434,20 @@ body {
   flex-wrap: wrap;
   gap: 10px 12px;
   align-items: center;
+  align-content: flex-start;
+  max-height: min(52dvh, 460px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.controls-head {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.10);
 }
 
 .controls.closed {
@@ -608,6 +622,31 @@ body {
 }
 
 .textarea:focus-visible {
+  border-color: rgba(124, 250, 124, 0.6);
+  box-shadow:
+    0 0 0 3px rgba(124, 250, 124, 0.16),
+    0 0 0 1px rgba(124, 250, 124, 0.35) inset;
+}
+
+.composer-input-trigger {
+  width: 100%;
+  min-height: 88px;
+  max-height: 180px;
+  overflow: auto;
+  text-align: left;
+  white-space: pre-wrap;
+  word-break: break-word;
+  background: rgba(0, 0, 0, 0.35);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 12px;
+  padding: 12px;
+  color: var(--text);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+  font-size: 13px;
+  cursor: text;
+}
+
+.composer-input-trigger:focus-visible {
   border-color: rgba(124, 250, 124, 0.6);
   box-shadow:
     0 0 0 3px rgba(124, 250, 124, 0.16),
@@ -875,6 +914,24 @@ body {
   backdrop-filter: blur(12px);
 }
 
+.fullscreen-input-overlay {
+  z-index: 24;
+}
+
+.fullscreen-input-modal {
+  width: min(860px, 100%);
+  max-height: min(92dvh, 760px);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.fullscreen-input-textarea {
+  height: min(56dvh, 420px);
+  min-height: min(56dvh, 420px);
+  font-size: 14px;
+}
+
 @media (max-width: 720px) {
   .page {
     padding: 12px;
@@ -946,6 +1003,7 @@ body {
   }
   .controls {
     gap: 8px 10px;
+    max-height: min(58dvh, 480px);
   }
   .queue-item {
     grid-template-columns: 1fr;
@@ -974,7 +1032,31 @@ body {
   .controls {
     padding: 10px;
   }
+  .controls-head {
+    position: sticky;
+    top: 0;
+    z-index: 1;
+    background: rgba(11, 15, 25, 0.96);
+    padding-top: 2px;
+  }
   .session-tab {
     max-width: 100%;
+  }
+  .composer-input-trigger {
+    min-height: 104px;
+    font-size: 14px;
+  }
+  .fullscreen-input-overlay {
+    align-items: flex-end;
+    padding: 10px;
+  }
+  .fullscreen-input-modal {
+    width: 100%;
+    border-radius: 14px;
+    padding: 14px;
+  }
+  .fullscreen-input-textarea {
+    height: min(60dvh, 460px);
+    min-height: min(60dvh, 460px);
   }
 }

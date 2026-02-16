@@ -575,6 +575,8 @@ function Chat(props: { chatId: string; sessionId: string; onSwitchChat: (chatId:
       return false;
     }
   });
+  const [fullscreenComposerOpen, setFullscreenComposerOpen] = useState(false);
+  const [fullscreenComposerText, setFullscreenComposerText] = useState('');
   const [cwdPickerOpen, setCwdPickerOpen] = useState(false);
   const [cwdRoots, setCwdRoots] = useState<{ path: string; label: string }[]>([]);
   const [cwdPath, setCwdPath] = useState<string>('');
@@ -1318,9 +1320,9 @@ function Chat(props: { chatId: string; sessionId: string; onSwitchChat: (chatId:
     }
   };
 
-  const send = async () => {
-    const trimmed = text.trim();
-    if (!trimmed) return;
+  const sendPrompt = async (inputValue: string): Promise<boolean> => {
+    const trimmed = inputValue.trim();
+    if (!trimmed) return false;
 
     // Escape: `//foo` -> send `/foo` literally (bypasses local slash-commands).
     const escapedLeadingSlash = trimmed.startsWith('//');
@@ -1338,14 +1340,14 @@ function Chat(props: { chatId: string; sessionId: string; onSwitchChat: (chatId:
           if (!r.ok || !r.status) {
             addSystem(`Status failed: ${r.error || 'unknown_error'}`);
             setText('');
-            return;
+            return true;
           }
           addSystem(formatStatusSummary(r.status, props.chatId, runtimeStatus || (busy ? 'running' : 'idle')));
         } catch (e: any) {
           addSystem(`Status failed: ${String(e?.message || e)}`);
         }
         setText('');
-        return;
+        return true;
       }
       if (cmd === 'model' || isWebModelCommand) {
         const modelArgRaw = (cmd === 'model' ? args : args.replace(/^model(\s+|$)/i, '')).trim();
@@ -1354,19 +1356,19 @@ function Chat(props: { chatId: string; sessionId: string; onSwitchChat: (chatId:
           const options = modelOptions.map((m) => m.slug).join(', ') || '(none)';
           addSystem(`model=${effectiveModel}\nusage: /model <id|default>\noptions: ${options}`);
           setText('');
-          return;
+          return true;
         }
         if (busy || startTurnRef.current) {
           addSystem('Cannot change model while a turn is running.');
           setText('');
-          return;
+          return true;
         }
         if (modelArgRaw.toLowerCase() === 'default') {
           setModelInput('');
           const ok = await applySettings({ model: null }, { model: undefined }, 'Model -> default');
           addSystem(ok ? `Model -> default (${defaults?.model || 'auto'})` : 'Model change failed.');
           setText('');
-          return;
+          return true;
         }
 
         setModelInput(modelArgRaw);
@@ -1378,14 +1380,14 @@ function Chat(props: { chatId: string; sessionId: string; onSwitchChat: (chatId:
           addSystem(isKnown ? `Model -> ${modelArgRaw}` : `Model -> ${modelArgRaw} (custom)`);
         }
         setText('');
-        return;
+        return true;
       }
       if (cmd === 'resume') {
         const status = await getStatus();
         if (!status.ok || !status.status?.session?.activeChatId) {
           addSystem('No resumable active chat found.');
           setText('');
-          return;
+          return true;
         }
         const target = status.status.session.activeChatId;
         if (target) {
@@ -1395,18 +1397,18 @@ function Chat(props: { chatId: string; sessionId: string; onSwitchChat: (chatId:
           addSystem('No resumable active chat found.');
         }
         setText('');
-        return;
+        return true;
       }
       if (cmd === 'web' && argsLower === 'help') {
         addSystem('Web commands: /status, /model [id|default], /resume, /compact [keep_last], /web help');
         setText('');
-        return;
+        return true;
       }
       if (cmd === 'compact') {
         if (busy || startTurnRef.current) {
           addSystem('Cannot compact while a turn is running.');
           setText('');
-          return;
+          return true;
         }
 
         const rawKeep = args.trim();
@@ -1414,13 +1416,13 @@ function Chat(props: { chatId: string; sessionId: string; onSwitchChat: (chatId:
         if (rawKeep && (parsedKeep === null || !Number.isFinite(parsedKeep) || parsedKeep < 0)) {
           addSystem('Usage: /compact [keep_last]');
           setText('');
-          return;
+          return true;
         }
         try {
           const r = await compactChat(props.chatId, parsedKeep ?? undefined);
           if (!r.ok) {
             setErr(r.error || 'compact_failed');
-            return;
+            return true;
           }
           await syncNow();
           addSystem(`OK: compact complete (removed ${r.removedCount || 0} messages).`);
@@ -1428,7 +1430,7 @@ function Chat(props: { chatId: string; sessionId: string; onSwitchChat: (chatId:
           setErr(String(e?.message || e));
         } finally {
           setText('');
-          return;
+          return true;
         }
       }
     }
@@ -1438,10 +1440,31 @@ function Chat(props: { chatId: string; sessionId: string; onSwitchChat: (chatId:
 
     if (busy || startTurnRef.current) {
       setQueuedPrompts((q) => [...q, promptText]);
-      return;
+      return true;
     }
 
     await startTurn(promptText, { restoreText: trimmed });
+    return true;
+  };
+
+  const send = async () => {
+    await sendPrompt(text);
+  };
+
+  const openFullscreenComposer = () => {
+    setFullscreenComposerText(text);
+    setFullscreenComposerOpen(true);
+  };
+
+  const closeFullscreenComposer = () => {
+    setFullscreenComposerOpen(false);
+  };
+
+  const sendFullscreenComposer = async () => {
+    const accepted = await sendPrompt(fullscreenComposerText);
+    if (!accepted) return;
+    setFullscreenComposerText('');
+    setFullscreenComposerOpen(false);
   };
 
   useEffect(() => {
@@ -1689,6 +1712,12 @@ function Chat(props: { chatId: string; sessionId: string; onSwitchChat: (chatId:
           {!isTerminalView ? (
             <>
         <div className={`controls ${controlsOpen ? 'open' : 'closed'}`}>
+          <div className="controls-head">
+            <div className="ctl-label">Settings</div>
+            <button className="btn btn-secondary btn-sm" onClick={() => setControlsOpen(false)}>
+              Back to Chat
+            </button>
+          </div>
           <div className="ctl">
             <div className="ctl-label">Model</div>
             <select
@@ -1992,27 +2021,33 @@ function Chat(props: { chatId: string; sessionId: string; onSwitchChat: (chatId:
         </div>
 
         <div className="composer">
-          <textarea
-            className="textarea"
-            placeholder="Ask Codex..."
-            value={text}
-            onChange={(e) => setText(e.target.value)}
-            onCompositionStart={() => setComposing(true)}
-            onCompositionEnd={() => setComposing(false)}
-            onKeyDown={(e) => {
-              // Chat-style composer: Enter sends, Shift+Enter makes a newline.
-              const inComposition = composing || e.nativeEvent.isComposing || e.key === 'Process';
-              if (inComposition) return;
-              if (e.key === 'Enter' && !e.shiftKey) {
-                e.preventDefault();
-                void send();
-              }
-            }}
-          />
+          {fullscreenMode && isMobileLayout ? (
+            <button className="composer-input-trigger" type="button" onClick={openFullscreenComposer}>
+              {text.trim() ? normalizeStreamText(text) : 'Tap to type your message'}
+            </button>
+          ) : (
+            <textarea
+              className="textarea"
+              placeholder="Ask Codex..."
+              value={text}
+              onChange={(e) => setText(e.target.value)}
+              onCompositionStart={() => setComposing(true)}
+              onCompositionEnd={() => setComposing(false)}
+              onKeyDown={(e) => {
+                // Chat-style composer: Enter sends, Shift+Enter makes a newline.
+                const inComposition = composing || e.nativeEvent.isComposing || e.key === 'Process';
+                if (inComposition) return;
+                if (e.key === 'Enter' && !e.shiftKey) {
+                  e.preventDefault();
+                  void send();
+                }
+              }}
+            />
+          )}
           <div className="composer-actions">
             {fullscreenMode && isMobileLayout ? (
               <button className="btn btn-secondary" onClick={openChatListMobile}>
-                Chats
+                Session
               </button>
             ) : null}
             <button className="btn btn-secondary" onClick={() => setFullscreenMode((v) => !v)}>
@@ -2026,6 +2061,47 @@ function Chat(props: { chatId: string; sessionId: string; onSwitchChat: (chatId:
             </button>
           </div>
         </div>
+        {fullscreenMode && isMobileLayout && fullscreenComposerOpen ? (
+          <div className="overlay fullscreen-input-overlay" onClick={closeFullscreenComposer}>
+            <div className="modal fullscreen-input-modal" onClick={(e) => e.stopPropagation()}>
+              <div className="cwdpicker-head">
+                <div className="cwdpicker-title">Message</div>
+                <button className="btn btn-secondary btn-sm" onClick={closeFullscreenComposer}>
+                  Close
+                </button>
+              </div>
+              <textarea
+                className="textarea fullscreen-input-textarea"
+                placeholder="Ask Codex..."
+                autoFocus
+                value={fullscreenComposerText}
+                onChange={(e) => setFullscreenComposerText(e.target.value)}
+                onCompositionStart={() => setComposing(true)}
+                onCompositionEnd={() => setComposing(false)}
+                onKeyDown={(e) => {
+                  const inComposition = composing || e.nativeEvent.isComposing || e.key === 'Process';
+                  if (inComposition) return;
+                  if (e.key === 'Enter' && !e.shiftKey) {
+                    e.preventDefault();
+                    void sendFullscreenComposer();
+                  }
+                }}
+              />
+              <div className="row row-tight">
+                <button className="btn btn-secondary" onClick={() => setFullscreenComposerText(AGENT_PROMPT_TEMPLATE)}>
+                  prompt
+                </button>
+                <button
+                  className="btn"
+                  disabled={fullscreenComposerText.trim().length === 0}
+                  onClick={() => void sendFullscreenComposer()}
+                >
+                  {busy ? 'Queue' : 'Send'}
+                </button>
+              </div>
+            </div>
+          </div>
+        ) : null}
         <div className="footnote">
           Enter to send, Shift+Enter for newline.
           {queuedPrompts.length > 0 ? <span className="muted"> (queued={queuedPrompts.length})</span> : null}
