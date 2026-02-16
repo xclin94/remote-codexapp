@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { memo, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import './app.css';
 import QRCode from 'qrcode';
 import TerminalPanel from './TerminalPanel';
@@ -242,6 +242,19 @@ function currentInstanceOrigin(): string {
     return '';
   }
 }
+
+const MessageRow = memo(
+  function MessageRow(props: { message: ChatMessage }) {
+    const m = props.message;
+    return (
+      <div className={`msg ${m.role}`}>
+        <div className="role">{m.role}</div>
+        <pre className="bubble">{normalizeStreamText(m.text)}</pre>
+      </div>
+    );
+  },
+  (prev, next) => prev.message === next.message
+);
 
 export default function App() {
   const [view, setView] = useState<View>({ kind: 'loading' });
@@ -516,6 +529,8 @@ function Login(props: { onAuthed: () => void | Promise<void> }) {
 function Chat(props: { chatId: string; sessionId: string; onSwitchChat: (chatId: string) => void | Promise<void>; onLogout: () => void | Promise<void> }) {
   const INITIAL_RENDER_COUNT = 15;
   const LOAD_MORE_COUNT = 15;
+  const INITIAL_SESSION_RENDER_COUNT = 120;
+  const SESSION_RENDER_STEP = 120;
 
   type ActivityItem = {
     ts: number;
@@ -582,6 +597,7 @@ function Chat(props: { chatId: string; sessionId: string; onSwitchChat: (chatId:
   const [streamErrorAt, setStreamErrorAt] = useState<number>(0);
   const [uiNow, setUiNow] = useState<number>(0);
   const [streamStatus, setStreamStatus] = useState<'connected' | 'reconnecting'>('connected');
+  const [sessionRenderCount, setSessionRenderCount] = useState(INITIAL_SESSION_RENDER_COUNT);
   type QueueState = { sid: string; chatId: string; prompts: string[] };
   const [queueState, setQueueState] = useState<QueueState>(() => ({
     sid: props.sessionId,
@@ -656,6 +672,13 @@ function Chat(props: { chatId: string; sessionId: string; onSwitchChat: (chatId:
   useEffect(() => {
     if (!isMobileLayout) setMobileChatListOpen(false);
   }, [isMobileLayout]);
+
+  useEffect(() => {
+    setSessionRenderCount((prev) => {
+      if (chatList.length <= 0) return INITIAL_SESSION_RENDER_COUNT;
+      return Math.min(chatList.length, Math.max(prev, INITIAL_SESSION_RENDER_COUNT));
+    });
+  }, [chatList.length]);
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -1445,6 +1468,9 @@ function Chat(props: { chatId: string; sessionId: string; onSwitchChat: (chatId:
     return `${name}  ${cwd}`;
   };
   const isTerminalView = Boolean(activeTerminal);
+  const activeChatIndex = chatList.findIndex((chat) => chat.id === props.chatId);
+  const visibleSessionLimit = activeChatIndex >= 0 ? Math.max(sessionRenderCount, activeChatIndex + 1) : sessionRenderCount;
+  const visibleChatList = chatList.slice(0, Math.max(INITIAL_SESSION_RENDER_COUNT, visibleSessionLimit));
   const instanceValue = INSTANCE_OPTIONS.some((o) => o.origin === currentInstanceOrigin())
     ? currentInstanceOrigin()
     : '';
@@ -1503,7 +1529,7 @@ function Chat(props: { chatId: string; sessionId: string; onSwitchChat: (chatId:
             {chatList.length === 0 && terminalList.length === 0 ? (
               <div className="session-tab session-tab-empty">No sessions</div>
             ) : null}
-            {chatList.length > 0 ? chatList.map((chat) => (
+            {visibleChatList.length > 0 ? visibleChatList.map((chat) => (
               <div key={chat.id} className="session-tab-row">
                 <button
                   className={`session-tab ${chat.id === props.chatId && !isTerminalView ? 'active' : ''}`}
@@ -1528,6 +1554,16 @@ function Chat(props: { chatId: string; sessionId: string; onSwitchChat: (chatId:
                 </button>
               </div>
             )) : null}
+            {chatList.length > visibleChatList.length ? (
+              <button
+                className="btn btn-secondary btn-sm"
+                type="button"
+                disabled={chatListBusy}
+                onClick={() => setSessionRenderCount((c) => Math.min(chatList.length, c + SESSION_RENDER_STEP))}
+              >
+                Load More Sessions ({chatList.length - visibleChatList.length})
+              </button>
+            ) : null}
             {terminalList.length > 0 ? (
               <>
                 <div className="session-tab session-tab-empty" style={{ margin: '6px 0 2px' }}>
@@ -1950,10 +1986,7 @@ function Chat(props: { chatId: string; sessionId: string; onSwitchChat: (chatId:
 
         <div className="chat" ref={chatRef} onScroll={onChatScroll}>
           {visibleMessages.map((m) => (
-            <div key={m.id} className={`msg ${m.role}`}>
-              <div className="role">{m.role}</div>
-              <pre className="bubble">{normalizeStreamText(m.text)}</pre>
-            </div>
+            <MessageRow key={m.id} message={m} />
           ))}
           <div ref={bottomRef} />
         </div>
