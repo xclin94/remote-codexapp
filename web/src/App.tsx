@@ -575,8 +575,6 @@ function Chat(props: { chatId: string; sessionId: string; onSwitchChat: (chatId:
       return false;
     }
   });
-  const [fullscreenComposerOpen, setFullscreenComposerOpen] = useState(false);
-  const [fullscreenComposerText, setFullscreenComposerText] = useState('');
   const [cwdPickerOpen, setCwdPickerOpen] = useState(false);
   const [cwdRoots, setCwdRoots] = useState<{ path: string; label: string }[]>([]);
   const [cwdPath, setCwdPath] = useState<string>('');
@@ -1451,22 +1449,6 @@ function Chat(props: { chatId: string; sessionId: string; onSwitchChat: (chatId:
     await sendPrompt(text);
   };
 
-  const openFullscreenComposer = () => {
-    setFullscreenComposerText(text);
-    setFullscreenComposerOpen(true);
-  };
-
-  const closeFullscreenComposer = () => {
-    setFullscreenComposerOpen(false);
-  };
-
-  const sendFullscreenComposer = async () => {
-    const accepted = await sendPrompt(fullscreenComposerText);
-    if (!accepted) return;
-    setFullscreenComposerText('');
-    setFullscreenComposerOpen(false);
-  };
-
   useEffect(() => {
     if (busy || startTurnRef.current || queuedPrompts.length === 0) return;
     const [next, ...rest] = queuedPrompts;
@@ -2021,34 +2003,23 @@ function Chat(props: { chatId: string; sessionId: string; onSwitchChat: (chatId:
         </div>
 
         <div className="composer">
-          {fullscreenMode && isMobileLayout ? (
-            <button
-              className="composer-input-trigger"
-              type="button"
-              aria-label="Open message input"
-              onClick={openFullscreenComposer}
-            >
-              {text.trim() ? normalizeStreamText(text) : ''}
-            </button>
-          ) : (
-            <textarea
-              className="textarea"
-              placeholder="Ask Codex..."
-              value={text}
-              onChange={(e) => setText(e.target.value)}
-              onCompositionStart={() => setComposing(true)}
-              onCompositionEnd={() => setComposing(false)}
-              onKeyDown={(e) => {
-                // Chat-style composer: Enter sends, Shift+Enter makes a newline.
-                const inComposition = composing || e.nativeEvent.isComposing || e.key === 'Process';
-                if (inComposition) return;
-                if (e.key === 'Enter' && !e.shiftKey) {
-                  e.preventDefault();
-                  void send();
-                }
-              }}
-            />
-          )}
+          <textarea
+            className="textarea"
+            placeholder="Ask Codex..."
+            value={text}
+            onChange={(e) => setText(e.target.value)}
+            onCompositionStart={() => setComposing(true)}
+            onCompositionEnd={() => setComposing(false)}
+            onKeyDown={(e) => {
+              // Chat-style composer: Enter sends, Shift+Enter makes a newline.
+              const inComposition = composing || e.nativeEvent.isComposing || e.key === 'Process';
+              if (inComposition) return;
+              if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault();
+                void send();
+              }
+            }}
+          />
           <div className="composer-actions">
             {fullscreenMode && isMobileLayout ? (
               <button className="btn btn-secondary" onClick={openChatListMobile}>
@@ -2066,47 +2037,6 @@ function Chat(props: { chatId: string; sessionId: string; onSwitchChat: (chatId:
             </button>
           </div>
         </div>
-        {fullscreenMode && isMobileLayout && fullscreenComposerOpen ? (
-          <div className="overlay fullscreen-input-overlay" onClick={closeFullscreenComposer}>
-            <div className="modal fullscreen-input-modal" onClick={(e) => e.stopPropagation()}>
-              <div className="cwdpicker-head">
-                <div className="cwdpicker-title">Message</div>
-                <button className="btn btn-secondary btn-sm" onClick={closeFullscreenComposer}>
-                  Close
-                </button>
-              </div>
-              <textarea
-                className="textarea fullscreen-input-textarea"
-                placeholder="Ask Codex..."
-                autoFocus
-                value={fullscreenComposerText}
-                onChange={(e) => setFullscreenComposerText(e.target.value)}
-                onCompositionStart={() => setComposing(true)}
-                onCompositionEnd={() => setComposing(false)}
-                onKeyDown={(e) => {
-                  const inComposition = composing || e.nativeEvent.isComposing || e.key === 'Process';
-                  if (inComposition) return;
-                  if (e.key === 'Enter' && !e.shiftKey) {
-                    e.preventDefault();
-                    void sendFullscreenComposer();
-                  }
-                }}
-              />
-              <div className="row row-tight">
-                <button className="btn btn-secondary" onClick={() => setFullscreenComposerText(AGENT_PROMPT_TEMPLATE)}>
-                  prompt
-                </button>
-                <button
-                  className="btn"
-                  disabled={fullscreenComposerText.trim().length === 0}
-                  onClick={() => void sendFullscreenComposer()}
-                >
-                  {busy ? 'Queue' : 'Send'}
-                </button>
-              </div>
-            </div>
-          </div>
-        ) : null}
         <div className="footnote">
           Enter to send, Shift+Enter for newline.
           {queuedPrompts.length > 0 ? <span className="muted"> (queued={queuedPrompts.length})</span> : null}
