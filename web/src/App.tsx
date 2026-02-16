@@ -480,6 +480,17 @@ function Chat(props: { chatId: string; sessionId: string; onSwitchChat: (chatId:
   const [uiStatus, setUiStatus] = useState<string>('');
   const [defaults, setDefaults] = useState<Defaults | null>(null);
   const [controlsOpen, setControlsOpen] = useState(false);
+  const [fullscreenMode, setFullscreenMode] = useState<boolean>(() => {
+    if (typeof window === 'undefined') return false;
+    try {
+      const raw = window.localStorage.getItem('fullscreenMode');
+      if (raw === '1') return true;
+      if (raw === '0') return false;
+      return window.matchMedia('(max-width: 720px)').matches;
+    } catch {
+      return false;
+    }
+  });
   const [cwdPickerOpen, setCwdPickerOpen] = useState(false);
   const [cwdRoots, setCwdRoots] = useState<{ path: string; label: string }[]>([]);
   const [cwdPath, setCwdPath] = useState<string>('');
@@ -1054,6 +1065,12 @@ function Chat(props: { chatId: string; sessionId: string; onSwitchChat: (chatId:
   }, [controlsOpen]);
 
   useEffect(() => {
+    if (typeof window !== 'undefined') {
+      window.localStorage.setItem('fullscreenMode', fullscreenMode ? '1' : '0');
+    }
+  }, [fullscreenMode]);
+
+  useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages.length]);
 
@@ -1384,7 +1401,7 @@ function Chat(props: { chatId: string; sessionId: string; onSwitchChat: (chatId:
   ).filter((v, i, arr) => arr.indexOf(v) === i);
 
   return (
-    <div className="page page-chat">
+    <div className={`page page-chat ${fullscreenMode ? 'fullscreen-mode' : ''}`}>
       <div className={`shell chat-layout ${mobileChatListOpen ? 'sidebar-open' : ''}`}>
         {isMobileLayout && mobileChatListOpen ? (
           <button className="sidebar-backdrop" aria-label="Close chat list" onClick={() => setMobileChatListOpen(false)} />
@@ -1877,6 +1894,14 @@ function Chat(props: { chatId: string; sessionId: string; onSwitchChat: (chatId:
             }}
           />
           <div className="composer-actions">
+            {fullscreenMode && isMobileLayout ? (
+              <button className="btn btn-secondary" onClick={openChatListMobile}>
+                Chats
+              </button>
+            ) : null}
+            <button className="btn btn-secondary" onClick={() => setFullscreenMode((v) => !v)}>
+              {fullscreenMode ? 'Normal' : 'Full'}
+            </button>
             <button className="btn" onClick={() => setText(AGENT_PROMPT_TEMPLATE)}>
               prompt
             </button>
