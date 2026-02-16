@@ -29,6 +29,7 @@ import {
   totpVerify,
   updateChatSettings,
   type ChatMessage,
+  type CliStatus,
   type Defaults,
   type ModelOption,
   type TerminalSession,
@@ -112,6 +113,26 @@ function asReasoningEffort(v: unknown): ReasoningEffort | '' {
 
 function normalizeStreamText(v: string): string {
   return v.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+}
+
+function formatTs(ts: number | null | undefined): string {
+  if (typeof ts !== 'number' || !Number.isFinite(ts) || ts <= 0) return 'n/a';
+  return new Date(ts).toLocaleString();
+}
+
+function formatStatusSummary(status: CliStatus, chatId: string, fallbackRuntimeStatus: string): string {
+  const runtimeItem = status.chats?.items?.find((item) => item.id === chatId);
+  const runtimeStatus = runtimeItem?.status || fallbackRuntimeStatus || 'idle';
+  const sessionId = status.session?.id ? status.session.id.slice(0, 8) : 'n/a';
+  const activeChatId = status.session?.activeChatId || 'none';
+  const defaults = status.defaults;
+
+  return [
+    `status: session=${sessionId} active=${activeChatId} now=${formatTs(status.time)}`,
+    `runtime: chat=${chatId.slice(0, 6)} status=${runtimeStatus} running=${status.chats?.running ?? 0}/${status.chats?.total ?? 0}`,
+    `defaults: model=${defaults?.model || 'default'} effort=${defaults?.reasoningEffort || 'default'} cwd=${defaults?.cwd || '(default)'}`,
+    `session: created=${formatTs(status.session?.createdAt)} expires=${formatTs(status.session?.expiresAt)}`
+  ].join('\n');
 }
 
 function queuedPromptsStorageKey(sid: string, chatId: string) {
@@ -1039,7 +1060,7 @@ function Chat(props: { chatId: string; sessionId: string; onSwitchChat: (chatId:
   const applySettings = async (patch: any, local: Partial<typeof settings>, statusText?: string) => {
     if (patch && typeof patch === 'object') {
       if ('sandbox' in patch || 'approvalPolicy' in patch) {
-        return;
+        return false;
       }
     }
     try {
@@ -1047,8 +1068,10 @@ function Chat(props: { chatId: string; sessionId: string; onSwitchChat: (chatId:
       setUiStatus(statusText || 'Updating...');
       await updateChatSettings(props.chatId, patch);
       setSettings((s) => ({ ...s, ...local }));
+      return true;
     } catch (e: any) {
       setErr(String(e?.message || e));
+      return false;
     } finally {
       setUiStatus('');
     }
@@ -1132,7 +1155,7 @@ function Chat(props: { chatId: string; sessionId: string; onSwitchChat: (chatId:
     setMessages((m) => [...m, userMsg]);
 
     try {
-      const r = await sendMessageAsync(props.chatId, promptText);
+      const r = await sendMessageAsync(props.chatId, promptText, settings.model || undefined);
       if (!r.ok || !r.assistantMessageId) {
         setBusy(false);
         setErr(r.error || 'send_failed');
@@ -1184,8 +1207,53 @@ function Chat(props: { chatId: string; sessionId: string; onSwitchChat: (chatId:
       const [cmdRaw, ...argParts] = rawPromptText.slice(1).trim().split(/\s+/);
       const cmd = (cmdRaw || '').toLowerCase();
       const args = argParts.join(' ').trim();
-      if (cmd === 'status' || (cmd === 'web' && args.toLowerCase() === 'status')) {
-        addSystem('Status command is unavailable in this app.');
+      const argsLower = args.toLowerCase();
+      const isWebModelCommand = cmd === 'web' && /^model(\s|$)/i.test(args);
+      if (cmd === 'status' || (cmd === 'web' && argsLower === 'status')) {
+        try {
+          const r = await getStatus();
+          if (!r.ok || !r.status) {
+            addSystem(`Status failed: ${r.error || 'unknown_error'}`);
+            setText('');
+            return;
+          }
+          addSystem(formatStatusSummary(r.status, props.chatId, runtimeStatus || (busy ? 'running' : 'idle')));
+        } catch (e: any) {
+          addSystem(`Status failed: ${String(e?.message || e)}`);
+        }
+        setText('');
+        return;
+      }
+      if (cmd === 'model' || isWebModelCommand) {
+        const modelArgRaw = (cmd === 'model' ? args : args.replace(/^model(\s+|$)/i, '')).trim();
+        const effectiveModel = settings.model || defaults?.model || 'default';
+        if (!modelArgRaw) {
+          const options = modelOptions.map((m) => m.slug).join(', ') || '(none)';
+          addSystem(`model=${effectiveModel}\nusage: /model <id|default>\noptions: ${options}`);
+          setText('');
+          return;
+        }
+        if (busy || startTurnRef.current) {
+          addSystem('Cannot change model while a turn is running.');
+          setText('');
+          return;
+        }
+        if (modelArgRaw.toLowerCase() === 'default') {
+          setModelInput('');
+          const ok = await applySettings({ model: null }, { model: undefined }, 'Model -> default');
+          addSystem(ok ? `Model -> default (${defaults?.model || 'auto'})` : 'Model change failed.');
+          setText('');
+          return;
+        }
+
+        setModelInput(modelArgRaw);
+        const ok = await applySettings({ model: modelArgRaw }, { model: modelArgRaw }, `Model -> ${modelArgRaw}`);
+        if (!ok) {
+          addSystem('Model change failed.');
+        } else {
+          const isKnown = modelOptions.some((m) => m.slug === modelArgRaw);
+          addSystem(isKnown ? `Model -> ${modelArgRaw}` : `Model -> ${modelArgRaw} (custom)`);
+        }
         setText('');
         return;
       }
@@ -1206,8 +1274,8 @@ function Chat(props: { chatId: string; sessionId: string; onSwitchChat: (chatId:
         setText('');
         return;
       }
-      if (cmd === 'web' && args.toLowerCase() === 'help') {
-        addSystem('Web commands: /resume, /compact [keep_last], /web help');
+      if (cmd === 'web' && argsLower === 'help') {
+        addSystem('Web commands: /status, /model [id|default], /resume, /compact [keep_last], /web help');
         setText('');
         return;
       }
@@ -1298,6 +1366,9 @@ function Chat(props: { chatId: string; sessionId: string; onSwitchChat: (chatId:
   };
 
   const modelOptions = defaults?.modelOptions || [];
+  const effectiveModel = settings.model || defaults?.model || '';
+  const effectiveReasoningEffort = settings.reasoningEffort || defaults?.reasoningEffort || '';
+  const effectiveCwd = settings.cwd || defaults?.cwd || '';
   const modelInputTrimmed = modelInput.trim();
   const modelSelectValue = !modelInputTrimmed
     ? MODEL_DEFAULT_VALUE
@@ -1429,11 +1500,11 @@ function Chat(props: { chatId: string; sessionId: string; onSwitchChat: (chatId:
             </div>
             {!isTerminalView ? (
               <div className="badge">
-                {settings.model ? `model=${settings.model}` : 'model=default'}{' '}
-                {settings.reasoningEffort ? `effort=${settings.reasoningEffort}` : ''}{' '}
+                {effectiveModel ? `model=${effectiveModel}` : 'model=default'}{' '}
+                {effectiveReasoningEffort ? `effort=${effectiveReasoningEffort}` : ''}{' '}
                 {`sandbox=${defaults?.sandbox || LOCKED_SANDBOX}`}{' '}
                 {`approval=${defaults?.approvalPolicy || LOCKED_APPROVAL_POLICY}`}{' '}
-                {settings.cwd ? `cwd=${settings.cwd}` : ''}
+                {effectiveCwd ? `cwd=${effectiveCwd}` : ''}
               </div>
             ) : null}
             <div className="spacer" />
@@ -1492,10 +1563,15 @@ function Chat(props: { chatId: string; sessionId: string; onSwitchChat: (chatId:
                 const v = e.target.value;
                 if (v === MODEL_DEFAULT_VALUE) {
                   setModelInput('');
+                  void applySettings({ model: null }, { model: undefined }, 'Model -> default');
                   return;
                 }
-                if (v === MODEL_CUSTOM_VALUE) return;
+                if (v === MODEL_CUSTOM_VALUE) {
+                  if (!modelInputTrimmed) setModelInput(settings.model || '');
+                  return;
+                }
                 setModelInput(v);
+                void applySettings({ model: v }, { model: v }, `Model -> ${v}`);
               }}
             >
               <option value={MODEL_DEFAULT_VALUE}>Default ({defaults?.model || 'auto'})</option>
