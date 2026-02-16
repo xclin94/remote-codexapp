@@ -22,7 +22,7 @@ const EnvSchema = z.object({
   CODEX_MODEL: z.preprocess(emptyToUndefined, z.string().default('gpt-5.3-codex')),
   CODEX_REASONING_EFFORT: z.preprocess(
     emptyToUndefined,
-    z.enum(['low', 'medium', 'high', 'xhigh']).default('high')
+    z.enum(['low', 'medium', 'high', 'xhigh']).default('xhigh')
   ),
   CODEX_CWD: z.string().default(process.cwd()),
   // Allowed roots for the web UI directory picker (comma-separated absolute paths).
