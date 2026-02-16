@@ -121,19 +121,86 @@ function formatTs(ts: number | null | undefined): string {
   return new Date(ts).toLocaleString();
 }
 
+function toNumber(v: unknown): number | null {
+  if (typeof v === 'number' && Number.isFinite(v)) return v;
+  if (typeof v === 'string') {
+    const n = Number(v);
+    if (Number.isFinite(n)) return n;
+  }
+  return null;
+}
+
+function toRecord(v: unknown): Record<string, unknown> | null {
+  return typeof v === 'object' && v !== null ? (v as Record<string, unknown>) : null;
+}
+
+function findNestedRecord(root: unknown, key: string): Record<string, unknown> | null {
+  const seen = new Set<unknown>();
+  const walk = (node: unknown): Record<string, unknown> | null => {
+    const rec = toRecord(node);
+    if (!rec || seen.has(rec)) return null;
+    seen.add(rec);
+    const target = toRecord(rec[key]);
+    if (target) return target;
+    for (const value of Object.values(rec)) {
+      const found = walk(value);
+      if (found) return found;
+    }
+    return null;
+  };
+  return walk(root);
+}
+
+function formatTokens(n: number): string {
+  if (!Number.isFinite(n) || n < 0) return '0';
+  if (n >= 1000) return `${(n / 1000).toFixed(1)}K`;
+  return `${Math.round(n)}`;
+}
+
+function formatResetAt(v: unknown): string {
+  const raw = toNumber(v);
+  if (raw === null) return 'n/a';
+  const tsMs = raw < 1_000_000_000_000 ? raw * 1000 : raw;
+  return formatTs(tsMs);
+}
+
 function formatStatusSummary(status: CliStatus, chatId: string, fallbackRuntimeStatus: string): string {
   const runtimeItem = status.chats?.items?.find((item) => item.id === chatId);
   const runtimeStatus = runtimeItem?.status || fallbackRuntimeStatus || 'idle';
   const sessionId = status.session?.id ? status.session.id.slice(0, 8) : 'n/a';
   const activeChatId = status.session?.activeChatId || 'none';
   const defaults = status.defaults;
-
-  return [
+  const lines: string[] = [
     `status: session=${sessionId} active=${activeChatId} now=${formatTs(status.time)}`,
     `runtime: chat=${chatId.slice(0, 6)} status=${runtimeStatus} running=${status.chats?.running ?? 0}/${status.chats?.total ?? 0}`,
     `defaults: model=${defaults?.model || 'default'} effort=${defaults?.reasoningEffort || 'default'} cwd=${defaults?.cwd || '(default)'}`,
     `session: created=${formatTs(status.session?.createdAt)} expires=${formatTs(status.session?.expiresAt)}`
-  ].join('\n');
+  ];
+
+  const cliUsage = toRecord(status.cliUsage);
+  const context = cliUsage ? toRecord(cliUsage.context_window) : null;
+  const ctxTotal = toNumber(context?.total_tokens);
+  const ctxUsed = toNumber(context?.used_tokens);
+  if (ctxTotal !== null && ctxUsed !== null && ctxTotal > 0) {
+    const left = Math.max(0, ctxTotal - ctxUsed);
+    const leftPct = Math.max(0, Math.min(100, Math.round((left / ctxTotal) * 100)));
+    lines.push(`context: ${leftPct}% left (${formatTokens(ctxUsed)} used / ${formatTokens(ctxTotal)})`);
+  }
+
+  const primary = findNestedRecord(status.cliRateLimits, 'primary');
+  const secondary = findNestedRecord(status.cliRateLimits, 'secondary');
+  const primaryUsed = toNumber(primary?.used_percent);
+  const secondaryUsed = toNumber(secondary?.used_percent);
+  if (primaryUsed !== null) {
+    const left = Math.max(0, 100 - Math.round(primaryUsed));
+    lines.push(`5h limit: ${left}% left (resets ${formatResetAt(primary?.resets_at)})`);
+  }
+  if (secondaryUsed !== null) {
+    const left = Math.max(0, 100 - Math.round(secondaryUsed));
+    lines.push(`weekly limit: ${left}% left (resets ${formatResetAt(secondary?.resets_at)})`);
+  }
+
+  return lines.join('\n');
 }
 
 function queuedPromptsStorageKey(sid: string, chatId: string) {
