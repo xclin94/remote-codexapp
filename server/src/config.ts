@@ -9,7 +9,7 @@ function emptyToUndefined(v: unknown) {
 const EnvSchema = z.object({
   HOST: z.string().default('127.0.0.1'),
   PORT: z.coerce.number().int().positive().default(18888),
-  SESSION_TTL_MS: z.coerce.number().int().positive().default(6 * 60 * 60 * 1000),
+  SESSION_TTL_MS: z.coerce.number().int().positive().default(24 * 60 * 60 * 1000),
   STUCK_RUNNING_ABORT_MS: z.coerce.number().int().positive().default(45 * 1000),
   DATA_DIR: z.preprocess(emptyToUndefined, z.string()).default('data'),
 

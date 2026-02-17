@@ -55,6 +55,7 @@ const LOCKED_SANDBOX = 'danger-full-access';
 const LOCKED_APPROVAL_POLICY = 'never';
 const QUEUED_PROMPTS_KEY_PREFIX = 'codex:queuedPrompts:';
 const FULLSCREEN_DESKTOP_KEY = 'codex:fullscreenDesktop';
+const CHAT_FAST_LOAD_TAIL = 240;
 const INSTANCE_OPTIONS: { label: string; origin: string; path: string }[] = [
   { label: 'conknow.cc', origin: 'https://conknow.cc', path: '/codex' },
   { label: 'conknow.app', origin: 'https://www.conknow.app', path: '/codex' }
@@ -244,16 +245,18 @@ function currentInstanceOrigin(): string {
 }
 
 const MessageRow = memo(
-  function MessageRow(props: { message: ChatMessage }) {
+  function MessageRow(props: { message: ChatMessage; showThinking?: boolean }) {
     const m = props.message;
+    const showThinking = Boolean(props.showThinking);
+    const text = showThinking ? 'Thinking...' : normalizeStreamText(m.text);
     return (
       <div className={`msg ${m.role}`}>
         <div className="role">{m.role}</div>
-        <pre className="bubble">{normalizeStreamText(m.text)}</pre>
+        <pre className={`bubble ${showThinking ? 'bubble-thinking' : ''}`}>{text}</pre>
       </div>
     );
   },
-  (prev, next) => prev.message === next.message
+  (prev, next) => prev.message === next.message && prev.showThinking === next.showThinking
 );
 
 export default function App() {
@@ -294,7 +297,7 @@ export default function App() {
     const wanted = new URLSearchParams(window.location.search).get('chat');
     if (wanted) {
       try {
-        await getChat(wanted);
+        await getChat(wanted, { tail: 1 });
         return wanted;
       } catch {
         // fall through
@@ -303,7 +306,7 @@ export default function App() {
 
     if (activeChatId) {
       try {
-        await getChat(activeChatId);
+        await getChat(activeChatId, { tail: 1 });
         return activeChatId;
       } catch {
         // fall through
@@ -313,7 +316,7 @@ export default function App() {
     const remembered = getRememberedChat(sid);
     if (remembered) {
       try {
-        await getChat(remembered);
+        await getChat(remembered, { tail: 1 });
         return remembered;
       } catch {
         // fall through
@@ -831,7 +834,10 @@ function Chat(props: { chatId: string; sessionId: string; onSwitchChat: (chatId:
     if (pollTimerRef.current) return;
     pollTimerRef.current = window.setInterval(async () => {
       try {
-        const [c2, rt2] = await Promise.all([getChat(props.chatId), getChatRuntime(props.chatId)]);
+        const [c2, rt2] = await Promise.all([
+          getChat(props.chatId, { tail: CHAT_FAST_LOAD_TAIL }),
+          getChatRuntime(props.chatId)
+        ]);
         setMessages(c2.messages);
         const { sandbox: _s, approvalPolicy: _a, ...savedSettings } = c2.settings || {};
         setSettings(savedSettings);
@@ -955,7 +961,10 @@ function Chat(props: { chatId: string; sessionId: string; onSwitchChat: (chatId:
       }
       // Sync with server state once per turn completion for correctness.
       try {
-        const [c2, rt2] = await Promise.all([getChat(props.chatId), getChatRuntime(props.chatId)]);
+        const [c2, rt2] = await Promise.all([
+          getChat(props.chatId, { tail: CHAT_FAST_LOAD_TAIL }),
+          getChatRuntime(props.chatId)
+        ]);
         setMessages(c2.messages);
         const { sandbox: _s, approvalPolicy: _a, ...savedSettings } = c2.settings || {};
         setSettings(savedSettings);
@@ -987,7 +996,10 @@ function Chat(props: { chatId: string; sessionId: string; onSwitchChat: (chatId:
     try {
       setErr(null);
       setUiStatus('Syncing...');
-      const [c2, rt2] = await Promise.all([getChat(props.chatId), getChatRuntime(props.chatId)]);
+      const [c2, rt2] = await Promise.all([
+        getChat(props.chatId, { tail: CHAT_FAST_LOAD_TAIL }),
+        getChatRuntime(props.chatId)
+      ]);
       setMessages(c2.messages);
       const { sandbox: _s, approvalPolicy: _a, ...savedSettings } = c2.settings || {};
       setSettings(savedSettings);
@@ -1074,9 +1086,14 @@ function Chat(props: { chatId: string; sessionId: string; onSwitchChat: (chatId:
       setStreamErrorCount(0);
       setStreamErrorAt(0);
       startTurnRef.current = false;
-      const chat = await getChat(props.chatId);
+      const chat = await getChat(props.chatId, { tail: CHAT_FAST_LOAD_TAIL });
       if (cancelled) return;
       setMessages(chat.messages);
+      window.requestAnimationFrame(() => {
+        window.requestAnimationFrame(() => {
+          if (!cancelled) scrollChatToLatest('auto');
+        });
+      });
       const { sandbox: _s, approvalPolicy: _a, ...savedSettings } = chat.settings || {};
       setSettings(savedSettings);
       setModelInput(savedSettings.model || '');
@@ -1144,6 +1161,16 @@ function Chat(props: { chatId: string; sessionId: string; onSwitchChat: (chatId:
     setRenderCount((c) => Math.min(messages.length, c + LOAD_MORE_COUNT));
   };
 
+  const scrollChatToLatest = (behavior: ScrollBehavior = 'auto') => {
+    if (behavior === 'smooth') {
+      bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
+      return;
+    }
+    const el = chatRef.current;
+    if (!el) return;
+    el.scrollTop = el.scrollHeight;
+  };
+
   useLayoutEffect(() => {
     const el = chatRef.current;
     const pending = historyLoadRef.current;
@@ -1177,7 +1204,7 @@ function Chat(props: { chatId: string; sessionId: string; onSwitchChat: (chatId:
   }, [fullscreenMode, isMobileLayout]);
 
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
+    scrollChatToLatest('smooth');
   }, [messages.length]);
 
   const applySettings = async (patch: any, local: Partial<typeof settings>, statusText?: string) => {
@@ -1997,7 +2024,16 @@ function Chat(props: { chatId: string; sessionId: string; onSwitchChat: (chatId:
 
         <div className="chat" ref={chatRef} onScroll={onChatScroll}>
           {visibleMessages.map((m) => (
-            <MessageRow key={m.id} message={m} />
+            <MessageRow
+              key={m.id}
+              message={m}
+              showThinking={
+                busy &&
+                m.role === 'assistant' &&
+                m.id === messages[messages.length - 1]?.id &&
+                !m.text.trim()
+              }
+            />
           ))}
           <div ref={bottomRef} />
         </div>

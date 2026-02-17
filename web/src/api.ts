@@ -45,6 +45,8 @@ export type Chat = {
   createdAt: number;
   updatedAt: number;
   messages: ChatMessage[];
+  messagesStart?: number;
+  messagesTotal?: number;
   settings?: {
     model?: string;
     reasoningEffort?: ReasoningEffort;
@@ -249,8 +251,13 @@ export async function setActiveChat(chatId: string): Promise<void> {
   if (!r.ok || !j.ok) throw new Error(j.error || 'failed');
 }
 
-export async function getChat(chatId: string): Promise<Chat> {
-  const r = await fetch(apiUrl(`/api/chats/${encodeURIComponent(chatId)}`), {
+export async function getChat(chatId: string, opts?: { tail?: number }): Promise<Chat> {
+  const q = new URLSearchParams();
+  if (typeof opts?.tail === 'number' && Number.isFinite(opts.tail) && opts.tail > 0) {
+    q.set('tail', String(Math.floor(opts.tail)));
+  }
+  const suffix = q.toString() ? `?${q.toString()}` : '';
+  const r = await fetch(apiUrl(`/api/chats/${encodeURIComponent(chatId)}${suffix}`), {
     credentials: 'include'
   });
   const j = await r.json();

@@ -1685,6 +1685,12 @@ app.get('/api/chats/:chatId', (req, res) => {
   if (!chat) return res.status(404).json({ ok: false, error: 'not_found' });
   store.setActiveChatId(sid, req.params.chatId);
 
+  const totalMessages = Array.isArray(chat.messages) ? chat.messages.length : 0;
+  const rawTail = typeof req.query.tail === 'string' ? Number(req.query.tail) : NaN;
+  const tail = Number.isFinite(rawTail) ? Math.max(0, Math.min(1000, Math.floor(rawTail))) : 0;
+  const start = tail > 0 ? Math.max(0, totalMessages - tail) : 0;
+  const messages = tail > 0 ? chat.messages.slice(start) : chat.messages;
+
   const safeSettings = { ...(chat.settings as Record<string, unknown>) };
   delete safeSettings.sandbox;
   delete safeSettings.approvalPolicy;
@@ -1693,6 +1699,9 @@ app.get('/api/chats/:chatId', (req, res) => {
     ok: true,
     chat: {
       ...chat,
+      messages,
+      messagesStart: start,
+      messagesTotal: totalMessages,
       settings: safeSettings
     }
   });

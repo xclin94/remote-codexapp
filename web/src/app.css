@@ -84,14 +84,6 @@ body {
   display: none;
 }
 
-.page-chat.fullscreen-mode .session-switch {
-  display: none;
-}
-
-.page-chat.fullscreen-mode .session-tab-row > .btn {
-  display: none;
-}
-
 .page-chat.fullscreen-mode .textarea {
   height: 116px;
   font-size: 14px;
@@ -591,6 +583,11 @@ body {
 .msg.assistant .bubble {
   border-color: rgba(124, 250, 124, 0.22);
   background: rgba(124, 250, 124, 0.06);
+}
+
+.bubble-thinking {
+  color: rgba(255, 255, 255, 0.72);
+  font-style: italic;
 }
 
 .composer {
