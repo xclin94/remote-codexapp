@@ -45,6 +45,7 @@ export type Chat = {
   createdAt: number;
   updatedAt: number;
   title?: string;
+  instanceId?: string;
   messages: ChatMessage[];
   messagesStart?: number;
   messagesTotal?: number;
@@ -75,12 +76,28 @@ export type CliStatus = {
     createdAt: number;
     expiresAt: number;
     activeChatId: string | null;
+    activeInstanceId?: string | null;
   };
   chats: {
     total: number;
     running: number;
-    items: { id: string; status: string; updatedAt: number; usage?: Record<string, unknown> }[];
+    items: { id: string; instanceId?: string | null; status: string; updatedAt: number; usage?: Record<string, unknown> }[];
   };
+};
+
+export type InstanceStatusItem = {
+  id: string;
+  label: string;
+  enabled: boolean;
+  codexHome: string;
+  isDefault: boolean;
+  ready: boolean;
+  loginStatus?: string | null;
+  usage?: Record<string, unknown> | null;
+  rateLimits?: Record<string, unknown> | null;
+  usageUpdatedAt?: number | null;
+  chats: number;
+  running: number;
 };
 
 export type ChatSettingsPatch = {
@@ -169,11 +186,12 @@ export async function logout(): Promise<void> {
   });
 }
 
-export async function createChat(): Promise<string> {
+export async function createChat(instanceId?: string): Promise<string> {
   const r = await fetch(apiUrl('/api/chats'), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    credentials: 'include'
+    credentials: 'include',
+    body: JSON.stringify(instanceId ? { instanceId } : {})
   });
   const j = await r.json();
   if (!j.ok) throw new Error(j.error || 'failed');
@@ -232,13 +250,36 @@ export async function deleteChat(chatId: string): Promise<void> {
   if (!r.ok || !j.ok) throw new Error(j.error || 'delete_failed');
 }
 
-export async function listChats(): Promise<{ id: string; updatedAt: number; createdAt: number; preview?: string; title?: string }[]> {
+export async function listChats(): Promise<{ id: string; updatedAt: number; createdAt: number; preview?: string; title?: string; instanceId?: string }[]> {
   const r = await fetch(apiUrl('/api/chats'), {
     credentials: 'include'
   });
   const j = await r.json().catch(() => ({}));
   if (!r.ok || !j.ok || !Array.isArray(j.chats)) throw new Error(j.error || 'failed');
-  return j.chats as { id: string; updatedAt: number; createdAt: number; preview?: string; title?: string }[];
+  return j.chats as { id: string; updatedAt: number; createdAt: number; preview?: string; title?: string; instanceId?: string }[];
+}
+
+export async function listInstances(): Promise<{
+  ok: boolean;
+  sourcePath?: string;
+  warning?: string;
+  defaultInstanceId?: string;
+  instances?: InstanceStatusItem[];
+  error?: string;
+}> {
+  const r = await fetch(`${apiUrl('/api/instances')}?ts=${Date.now()}`, {
+    credentials: 'include',
+    cache: 'no-store'
+  });
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok || !j.ok) return { ok: false, error: j.error || `http_${r.status}` };
+  return {
+    ok: true,
+    sourcePath: typeof j.sourcePath === 'string' ? j.sourcePath : undefined,
+    warning: typeof j.warning === 'string' ? j.warning : undefined,
+    defaultInstanceId: typeof j.defaultInstanceId === 'string' ? j.defaultInstanceId : undefined,
+    instances: Array.isArray(j.instances) ? (j.instances as InstanceStatusItem[]) : []
+  };
 }
 
 export async function setActiveChat(chatId: string): Promise<void> {

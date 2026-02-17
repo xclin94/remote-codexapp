@@ -13,6 +13,7 @@
 - TOTP 登录（首次登录自动展示二维码）
 - 会话与聊天持久化（`DATA_DIR`，默认 `data`）
 - `/status` 状态与用量信息
+- 本地多实例路由（新会话可选实例，支持自动轮转，单会话固定实例）
 - 聊天内 `/web help` 命令
 - 交互式 Terminal（WebSocket + PTY），并与聊天会话同级切换
 - Terminal 管理 API（`POST /api/terminal`、`GET /api/terminals`、`GET /ws/terminal`）
@@ -83,6 +84,37 @@ node -e "const { authenticator } = require('otplib'); console.log(authenticator.
 - `/web status`
 - `/resume`
 - `/status` 由后端处理，可显示运行中的实时状态
+
+## 多账号实例（本地配置，不入库）
+
+可通过多个 `CODEX_HOME` 目录绑定多个 Codex CLI 账号：
+
+1. 分别登录账号：
+
+```bash
+CODEX_HOME=/root/.codex-a2 codex login --device-auth
+CODEX_HOME=/root/.codex-a3 codex login --device-auth
+```
+
+2. 创建本地实例配置（默认放在仓库外）：
+
+```bash
+mkdir -p ~/.codex-remoteapp
+cp server/instances.local.example.json ~/.codex-remoteapp/instances.local.json
+# 按需修改 id/label/codexHome
+```
+
+3. 可选：在 `server/.env` 显式指定配置文件路径：
+
+```bash
+CODEX_INSTANCES_FILE=$HOME/.codex-remoteapp/instances.local.json
+```
+
+行为说明：
+- 新建 Session 时可以选指定实例或 `Auto`
+- `Auto` 会按额度压力 + 当前负载做轮转
+- 单个会话固定绑定一个实例（避免中途切换导致上下文丢失）
+- Web 端提供 `Instances` 管理面板，可查看登录状态、额度和会话负载
 
 ### 凭据登录（Credential）
 
@@ -198,6 +230,7 @@ CODEREMOTEAPP_LOG=/path/to/log npm run restart
 
 - `GET /api/me`
 - `POST /api/chats`
+- `GET /api/instances`（实例状态/额度/负载）
 - `GET /api/chats`
 - `GET /api/chats/:id`
 - `POST /api/chats/:id/send`

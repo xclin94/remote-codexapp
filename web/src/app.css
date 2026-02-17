@@ -172,9 +172,15 @@ body {
 
 .session-switch {
   display: flex;
-  align-items: stretch;
+  align-items: center;
+  flex-wrap: wrap;
   gap: 8px;
   width: 100%;
+  min-width: 0;
+}
+
+.session-instance-select {
+  flex: 1 1 100%;
   min-width: 0;
 }
 
@@ -896,6 +902,91 @@ body {
   backdrop-filter: blur(12px);
 }
 
+.instances-modal {
+  width: min(960px, 100%);
+  max-height: min(86dvh, 900px);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.instances-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.instances-title {
+  font-weight: 750;
+  letter-spacing: 0.2px;
+}
+
+.instances-subtitle {
+  color: var(--muted);
+  font-size: 12px;
+  margin-top: 4px;
+}
+
+.instances-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.instances-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.instances-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  overflow: auto;
+  padding-right: 4px;
+}
+
+.instance-card {
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 12px;
+  padding: 10px 12px;
+  background: rgba(255, 255, 255, 0.04);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.instance-card.is-ready {
+  border-color: rgba(124, 250, 124, 0.28);
+}
+
+.instance-card.is-down {
+  border-color: rgba(255, 95, 109, 0.34);
+}
+
+.instance-card.is-disabled {
+  opacity: 0.72;
+}
+
+.instance-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  font-size: 12px;
+}
+
+.instances-footnote {
+  color: var(--muted);
+  font-size: 12px;
+  border-top: 1px solid rgba(255, 255, 255, 0.1);
+  padding-top: 10px;
+}
+
 @media (max-width: 720px) {
   .page {
     padding: 12px;
@@ -1009,6 +1100,17 @@ body {
   .session-row-actions {
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .instances-head {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+  .instances-actions {
+    width: 100%;
+    justify-content: flex-start;
+  }
+  .instances-modal {
+    max-height: 92dvh;
   }
   .page-chat.fullscreen-mode .composer {
     grid-template-columns: 1fr;

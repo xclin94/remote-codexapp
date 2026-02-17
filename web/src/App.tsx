@@ -22,6 +22,7 @@ import {
   getStatus,
   getTotpStatus,
   getTotpUri,
+  listInstances,
   logout,
   resetChatSession,
   renameChat,
@@ -32,6 +33,7 @@ import {
   type ChatMessage,
   type CliStatus,
   type Defaults,
+  type InstanceStatusItem,
   type ModelOption,
   type TerminalSession,
   type ReasoningEffort
@@ -57,10 +59,6 @@ const LOCKED_APPROVAL_POLICY = 'never';
 const QUEUED_PROMPTS_KEY_PREFIX = 'codex:queuedPrompts:';
 const FULLSCREEN_DESKTOP_KEY = 'codex:fullscreenDesktop';
 const CHAT_FAST_LOAD_TAIL = 240;
-const INSTANCE_OPTIONS: { label: string; origin: string; path: string }[] = [
-  { label: 'conknow.cc', origin: 'https://conknow.cc', path: '/codex' },
-  { label: 'conknow.app', origin: 'https://www.conknow.app', path: '/codex' }
-];
 const AGENT_PROMPT_TEMPLATE = `你不是被动回答问题的助手，而是一个【自主执行的任务型 agent】。
 你的目标不是“给建议”，而是【把事情真正完成】。
 
@@ -171,9 +169,10 @@ function formatStatusSummary(status: CliStatus, chatId: string, fallbackRuntimeS
   const runtimeStatus = runtimeItem?.status || fallbackRuntimeStatus || 'idle';
   const sessionId = status.session?.id ? status.session.id.slice(0, 8) : 'n/a';
   const activeChatId = status.session?.activeChatId || 'none';
+  const activeInstanceId = status.session?.activeInstanceId || runtimeItem?.instanceId || 'default';
   const defaults = status.defaults;
   const lines: string[] = [
-    `status: session=${sessionId} active=${activeChatId} now=${formatTs(status.time)}`,
+    `status: session=${sessionId} active=${activeChatId} instance=${activeInstanceId} now=${formatTs(status.time)}`,
     `runtime: chat=${chatId.slice(0, 6)} status=${runtimeStatus} running=${status.chats?.running ?? 0}/${status.chats?.total ?? 0}`,
     `defaults: model=${defaults?.model || 'default'} effort=${defaults?.reasoningEffort || 'default'} cwd=${defaults?.cwd || '(default)'}`,
     `session: created=${formatTs(status.session?.createdAt)} expires=${formatTs(status.session?.expiresAt)}`
@@ -205,6 +204,31 @@ function formatStatusSummary(status: CliStatus, chatId: string, fallbackRuntimeS
   return lines.join('\n');
 }
 
+function formatInstanceQuotaSummary(item: InstanceStatusItem): string {
+  const lines: string[] = [];
+  const usage = toRecord(item.usage || null);
+  const context = usage ? toRecord(usage.context_window) : null;
+  const ctxTotal = toNumber(context?.total_tokens);
+  const ctxUsed = toNumber(context?.used_tokens);
+  if (ctxTotal !== null && ctxUsed !== null && ctxTotal > 0) {
+    const left = Math.max(0, Math.min(100, Math.round(((ctxTotal - ctxUsed) / ctxTotal) * 100)));
+    lines.push(`Context ${left}% left (${formatTokens(ctxUsed)} / ${formatTokens(ctxTotal)})`);
+  }
+
+  const primary = findNestedRecord(item.rateLimits || null, 'primary');
+  const secondary = findNestedRecord(item.rateLimits || null, 'secondary');
+  const primaryUsed = toNumber(primary?.used_percent);
+  const secondaryUsed = toNumber(secondary?.used_percent);
+  if (primaryUsed !== null) {
+    lines.push(`5h ${Math.max(0, 100 - Math.round(primaryUsed))}% left`);
+  }
+  if (secondaryUsed !== null) {
+    lines.push(`7d ${Math.max(0, 100 - Math.round(secondaryUsed))}% left`);
+  }
+
+  return lines.join(' | ') || 'No quota data yet';
+}
+
 function queuedPromptsStorageKey(sid: string, chatId: string) {
   return `${QUEUED_PROMPTS_KEY_PREFIX}${sid}:${chatId}`;
 }
@@ -234,14 +258,6 @@ function saveQueuedPrompts(sid: string, chatId: string, prompts: string[]) {
     window.localStorage.setItem(queuedPromptsStorageKey(sid, chatId), JSON.stringify(prompts.slice(0, 200)));
   } catch {
     // ignore localStorage failures
-  }
-}
-
-function currentInstanceOrigin(): string {
-  try {
-    return window.location.origin || '';
-  } catch {
-    return '';
   }
 }
 
@@ -535,7 +551,7 @@ function Chat(props: { chatId: string; sessionId: string; onSwitchChat: (chatId:
   const LOAD_MORE_COUNT = 15;
   const INITIAL_SESSION_RENDER_COUNT = 120;
   const SESSION_RENDER_STEP = 120;
-  type ChatListItem = { id: string; updatedAt: number; createdAt: number; preview?: string; title?: string };
+  type ChatListItem = { id: string; updatedAt: number; createdAt: number; preview?: string; title?: string; instanceId?: string };
 
   type ActivityItem = {
     ts: number;
@@ -620,6 +636,14 @@ function Chat(props: { chatId: string; sessionId: string; onSwitchChat: (chatId:
   };
   const [mobileChatListOpen, setMobileChatListOpen] = useState(false);
   const [isMobileLayout, setIsMobileLayout] = useState(false);
+  const [instanceItems, setInstanceItems] = useState<InstanceStatusItem[]>([]);
+  const [instanceDefaultId, setInstanceDefaultId] = useState<string>('');
+  const [instanceConfigPath, setInstanceConfigPath] = useState<string>('');
+  const [instanceWarning, setInstanceWarning] = useState<string>('');
+  const [instanceSelectValue, setInstanceSelectValue] = useState<string>('auto');
+  const [instancePanelOpen, setInstancePanelOpen] = useState(false);
+  const [instanceLoading, setInstanceLoading] = useState(false);
+  const [instanceError, setInstanceError] = useState<string>('');
 
   const chatRef = useRef<HTMLDivElement | null>(null);
   const bottomRef = useRef<HTMLDivElement | null>(null);
@@ -699,6 +723,22 @@ function Chat(props: { chatId: string; sessionId: string; onSwitchChat: (chatId:
     }
   }, [isMobileLayout]);
 
+  useEffect(() => {
+    let cancelled = false;
+    const run = async () => {
+      if (cancelled) return;
+      await refreshInstances();
+    };
+    void run();
+    const timer = window.setInterval(() => {
+      void run();
+    }, 30_000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, []);
+
   const refreshTerminals = async () => {
     const seq = ++terminalListRefreshSeqRef.current;
     try {
@@ -729,6 +769,32 @@ function Chat(props: { chatId: string; sessionId: string; onSwitchChat: (chatId:
     return chats;
   };
 
+  const refreshInstances = async () => {
+    try {
+      setInstanceLoading(true);
+      const r = await listInstances();
+      if (!r.ok) {
+        setInstanceError(r.error || 'instance_fetch_failed');
+        return;
+      }
+      const items = Array.isArray(r.instances) ? r.instances : [];
+      setInstanceItems(items);
+      setInstanceDefaultId(r.defaultInstanceId || '');
+      setInstanceConfigPath(r.sourcePath || '');
+      setInstanceWarning(r.warning || '');
+      setInstanceError('');
+      setInstanceSelectValue((prev) => {
+        if (prev === 'auto') return prev;
+        if (items.some((item) => item.id === prev && item.enabled)) return prev;
+        return 'auto';
+      });
+    } catch (e: any) {
+      setInstanceError(String(e?.message || e));
+    } finally {
+      setInstanceLoading(false);
+    }
+  };
+
   const copyCredentialToClipboard = async (value: string) => {
     if (!value) return;
     try {
@@ -749,6 +815,12 @@ function Chat(props: { chatId: string; sessionId: string; onSwitchChat: (chatId:
     setMobileChatListOpen(true);
   };
 
+  const createSessionByCurrentSelection = async (): Promise<string> => {
+    const selected = instanceSelectValue.trim();
+    if (!selected || selected === 'auto') return createChat('auto');
+    return createChat(selected);
+  };
+
   const removeChat = async (chatId: string) => {
     if (!window.confirm('Delete this session and remove all its messages?')) {
       return;
@@ -765,7 +837,7 @@ function Chat(props: { chatId: string; sessionId: string; onSwitchChat: (chatId:
         return;
       }
 
-      const newId = await createChat();
+      const newId = await createSessionByCurrentSelection();
       void props.onSwitchChat(newId);
     } catch (e: any) {
       setErr(String(e?.message || e));
@@ -1520,18 +1592,22 @@ function Chat(props: { chatId: string; sessionId: string; onSwitchChat: (chatId:
 
   const chatOptionLabel = (chat: ChatListItem) => {
     const shortId = chat.id.slice(0, 6);
+    const instance = (chat.instanceId || '').trim();
+    const prefix = instance ? `[${instance}] ` : '';
     const title = (chat.title || '').trim();
-    if (title) return `${shortId}  ${title.slice(0, 40)}`;
+    if (title) return `${shortId}  ${prefix}${title.slice(0, 40)}`;
     const preview = (chat.preview || '').replace(/\s+/g, ' ').trim();
-    if (preview) return `${shortId}  ${preview.slice(0, 40)}`;
-    return `${shortId}  ${new Date(chat.updatedAt).toLocaleTimeString()}`;
+    if (preview) return `${shortId}  ${prefix}${preview.slice(0, 40)}`;
+    return `${shortId}  ${prefix}${new Date(chat.updatedAt).toLocaleTimeString()}`;
   };
   const sessionTabLabel = (chat: ChatListItem) => {
+    const instance = (chat.instanceId || '').trim();
+    const prefix = instance ? `[${instance}] ` : '';
     const title = (chat.title || '').trim();
-    if (title) return title.slice(0, 42);
+    if (title) return `${prefix}${title}`.slice(0, 42);
     const preview = (chat.preview || '').replace(/\s+/g, ' ').trim();
-    if (preview) return preview.slice(0, 42);
-    return new Date(chat.updatedAt).toLocaleTimeString();
+    if (preview) return `${prefix}${preview}`.slice(0, 42);
+    return `${prefix}${new Date(chat.updatedAt).toLocaleTimeString()}`.slice(0, 42);
   };
   const terminalOptionLabel = (terminal: TerminalSession) => {
     const name = terminal.terminalId.slice(0, 10);
@@ -1539,28 +1615,11 @@ function Chat(props: { chatId: string; sessionId: string; onSwitchChat: (chatId:
     return `${name}  ${cwd}`;
   };
   const isTerminalView = Boolean(activeTerminal);
+  const activeChatMeta = chatList.find((chat) => chat.id === props.chatId);
+  const activeChatInstanceId = activeChatMeta?.instanceId || instanceDefaultId || 'default';
   const activeChatIndex = chatList.findIndex((chat) => chat.id === props.chatId);
   const visibleSessionLimit = activeChatIndex >= 0 ? Math.max(sessionRenderCount, activeChatIndex + 1) : sessionRenderCount;
   const visibleChatList = chatList.slice(0, Math.max(INITIAL_SESSION_RENDER_COUNT, visibleSessionLimit));
-  const instanceValue = INSTANCE_OPTIONS.some((o) => o.origin === currentInstanceOrigin())
-    ? currentInstanceOrigin()
-    : '';
-  const switchInstance = (nextOrigin: string) => {
-    const opt = INSTANCE_OPTIONS.find((o) => o.origin === nextOrigin);
-    if (!opt) return;
-    const target = `${opt.origin}${opt.path}`;
-    if (target === `${window.location.origin}${window.location.pathname.replace(/\/+$/, '')}`) return;
-
-    const dirty =
-      Boolean(busy) ||
-      (queueState.sid === props.sessionId && queueState.chatId === props.chatId && queueState.prompts.length > 0) ||
-      (!isTerminalView && text.trim().length > 0);
-    if (dirty) {
-      const ok = window.confirm('切换实例会中断当前运行/丢失未发送内容，确定切换吗？');
-      if (!ok) return;
-    }
-    window.location.assign(target);
-  };
 
   const modelOptions = defaults?.modelOptions || [];
   const effectiveModel = settings.model || defaults?.model || '';
@@ -1672,12 +1731,28 @@ function Chat(props: { chatId: string; sessionId: string; onSwitchChat: (chatId:
             {null}
           </div>
           <div className="session-switch">
+            <select
+              className="input input-sm session-instance-select"
+              value={instanceSelectValue}
+              onChange={(e) => setInstanceSelectValue(e.target.value)}
+              title="Instance for new session"
+            >
+              <option value="auto">Auto (按额度/负载轮转)</option>
+              {instanceItems
+                .filter((item) => item.enabled)
+                .map((item) => (
+                  <option key={item.id} value={item.id}>
+                    {item.label} ({item.id}{item.isDefault ? ', default' : ''}{item.ready ? '' : ', not ready'})
+                  </option>
+                ))}
+            </select>
             <button
               className="btn btn-secondary btn-sm"
               onClick={async () => {
                 try {
-                  const newChatId = await createChat();
+                  const newChatId = await createSessionByCurrentSelection();
                   void refreshChatList();
+                  void refreshInstances();
                   selectChat(newChatId);
                 } catch (e: any) {
                   setErr(String(e?.message || e));
@@ -1685,6 +1760,15 @@ function Chat(props: { chatId: string; sessionId: string; onSwitchChat: (chatId:
               }}
             >
               New
+            </button>
+            <button
+              className="btn btn-secondary btn-sm"
+              onClick={() => {
+                setInstancePanelOpen(true);
+                void refreshInstances();
+              }}
+            >
+              Instances
             </button>
             <button
               className="btn btn-secondary btn-sm"
@@ -1720,6 +1804,7 @@ function Chat(props: { chatId: string; sessionId: string; onSwitchChat: (chatId:
             </div>
             {!isTerminalView ? (
               <div className="badge">
+                {`instance=${activeChatInstanceId}`}{' '}
                 {effectiveModel ? `model=${effectiveModel}` : 'model=default'}{' '}
                 {effectiveReasoningEffort ? `effort=${effectiveReasoningEffort}` : ''}{' '}
                 {`sandbox=${defaults?.sandbox || LOCKED_SANDBOX}`}{' '}
@@ -1728,22 +1813,6 @@ function Chat(props: { chatId: string; sessionId: string; onSwitchChat: (chatId:
               </div>
             ) : null}
             <div className="spacer" />
-            <select
-              className="input input-sm"
-              style={{ flex: '0 0 auto', minWidth: 160 }}
-              value={instanceValue}
-              onChange={(e) => switchInstance(e.target.value)}
-              title="Switch instance"
-            >
-              <option value="" disabled>
-                Instance
-              </option>
-              {INSTANCE_OPTIONS.map((o) => (
-                <option key={o.origin} value={o.origin}>
-                  {o.label}
-                </option>
-              ))}
-            </select>
             {!isTerminalView ? (
               <button className="btn btn-secondary btn-sm" onClick={() => setControlsOpen((v) => !v)}>
                 Settings
@@ -2268,6 +2337,60 @@ function Chat(props: { chatId: string; sessionId: string; onSwitchChat: (chatId:
           ) : null}
       </section>
     </div>
+    {instancePanelOpen ? (
+      <div className="overlay" onClick={() => setInstancePanelOpen(false)}>
+        <div className="modal instances-modal" onClick={(e) => e.stopPropagation()}>
+          <div className="instances-head">
+            <div>
+              <div className="instances-title">Instance Manager</div>
+              <div className="instances-subtitle">查看本地实例登录状态、额度和会话负载</div>
+            </div>
+            <div className="instances-actions">
+              <button className="btn btn-secondary btn-sm" disabled={instanceLoading} onClick={() => void refreshInstances()}>
+                {instanceLoading ? 'Refreshing...' : 'Refresh'}
+              </button>
+              <button className="btn btn-secondary btn-sm" onClick={() => setInstancePanelOpen(false)}>
+                Close
+              </button>
+            </div>
+          </div>
+          <div className="instances-meta">
+            {instanceConfigPath ? <div>Config: <code>{instanceConfigPath}</code></div> : null}
+            {instanceWarning ? <div className="status status-error">Warning: {instanceWarning}</div> : null}
+            {instanceError ? <div className="status status-error">Error: {instanceError}</div> : null}
+          </div>
+          <div className="instances-list">
+            {instanceItems.map((item) => (
+              <div
+                key={item.id}
+                className={`instance-card ${item.ready ? 'is-ready' : 'is-down'} ${item.enabled ? '' : 'is-disabled'}`}
+              >
+                <div className="instance-row">
+                  <strong>{item.label}</strong>
+                  <span className="badge badge-tight">{item.id}</span>
+                  {item.isDefault ? <span className="badge badge-tight">default</span> : null}
+                  {!item.enabled ? <span className="badge badge-tight">disabled</span> : null}
+                  {!item.ready ? <span className="badge badge-tight">not ready</span> : null}
+                </div>
+                <div className="instance-row muted">
+                  login: {item.loginStatus || 'unknown'} | chats: {item.running}/{item.chats}
+                </div>
+                <div className="instance-row muted">
+                  home: <code>{item.codexHome}</code>
+                </div>
+                <div className="instance-row">
+                  {formatInstanceQuotaSummary(item)}
+                </div>
+              </div>
+            ))}
+            {instanceItems.length === 0 ? <div className="instance-card">No configured instances.</div> : null}
+          </div>
+          <div className="instances-footnote">
+            新建 Session 使用上方下拉框选择实例；`Auto` 会按额度压力和负载自动轮转，但单个 Session 会固定绑定一个实例。
+          </div>
+        </div>
+      </div>
+    ) : null}
     </div>
   );
 }

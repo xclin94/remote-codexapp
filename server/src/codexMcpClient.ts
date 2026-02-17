@@ -37,6 +37,7 @@ export class CodexMcpClient {
   private client: Client;
   private transport: StdioClientTransport | null = null;
   private connected = false;
+  private readonly envOverrides: Record<string, string>;
 
   private sessionId: string | null = null;
   private conversationId: string | null = null;
@@ -48,7 +49,8 @@ export class CodexMcpClient {
   private lastUsage: CodexUsage | null = null;
   private lastRateLimits: CodexRateLimits | null = null;
 
-  constructor() {
+  constructor(opts?: { env?: Record<string, string> }) {
+    this.envOverrides = opts?.env ? { ...opts.env } : {};
     this.client = new Client(
       { name: 'codex-remoteapp', version: '1.0.0' },
       { capabilities: { elicitation: {} } }
@@ -136,14 +138,19 @@ export class CodexMcpClient {
   async connect(): Promise<void> {
     if (this.connected) return;
 
+    const mergedEnv = Object.keys(process.env).reduce((acc, k) => {
+      const v = process.env[k];
+      if (typeof v === 'string') acc[k] = v;
+      return acc;
+    }, {} as Record<string, string>);
+    for (const [k, v] of Object.entries(this.envOverrides)) {
+      mergedEnv[k] = v;
+    }
+
     this.transport = new StdioClientTransport({
       command: 'codex',
       args: ['mcp-server'],
-      env: Object.keys(process.env).reduce((acc, k) => {
-        const v = process.env[k];
-        if (typeof v === 'string') acc[k] = v;
-        return acc;
-      }, {} as Record<string, string>)
+      env: mergedEnv
     });
 
     // Permission requests come via MCP elicitation.

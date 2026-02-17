@@ -56,6 +56,13 @@ type CodexModelOption = {
   reasoningEfforts: ReasoningEffort[];
 };
 
+type CodexInstanceConfig = {
+  id: string;
+  label: string;
+  codexHome: string;
+  enabled: boolean;
+};
+
 function isRecord(v: unknown): v is Record<string, unknown> {
   return typeof v === 'object' && v !== null;
 }
@@ -73,6 +80,11 @@ type CliHistoryStatusSnapshot = {
   timestampMs: number;
 };
 
+type InstanceHealthSnapshot = {
+  ready: boolean;
+  loginStatus: string | null;
+};
+
 type TerminalRuntime = {
   sid: string;
   record: TerminalSessionRecord;
@@ -87,7 +99,10 @@ const CLI_HISTORY_CACHE_TTL_MS = 1_500;
 const CLI_HISTORY_SCAN_FILE_LIMIT = 200;
 const COMPACT_KEEP_LAST_DEFAULT = 8;
 const COMPACT_SUMMARY_MAX_CHARS = 2_000;
-let cliHistorySnapshotCache: { expiresAt: number; snapshot: CliHistoryStatusSnapshot | null } | null = null;
+const cliHistorySnapshotCacheByHome = new Map<string, { expiresAt: number; snapshot: CliHistoryStatusSnapshot | null }>();
+const instanceHealthCache = new Map<string, { expiresAt: number; snapshot: InstanceHealthSnapshot }>();
+const INSTANCE_HEALTH_CACHE_TTL_MS = 20_000;
+let autoInstanceRoundRobinCursor = 0;
 
 function normalizeCompactKeep(value: unknown): number {
   const n = Number(value);
@@ -302,6 +317,267 @@ function resolveCodexHomePath(): string {
   return path.resolve(expanded);
 }
 
+type InstanceConfigSnapshot = {
+  filePath: string;
+  defaultInstanceId: string;
+  instances: CodexInstanceConfig[];
+  warning?: string;
+};
+
+function resolveInstancesConfigPath(): string {
+  const raw = env.CODEX_INSTANCES_FILE?.trim();
+  const fallback = path.join(os.homedir(), '.codex-remoteapp', 'instances.local.json');
+  const expanded = (raw || fallback)
+    .replace(/^~(?=\/|$)/, os.homedir())
+    .replace(/\$\{HOME\}/g, os.homedir())
+    .replace(/\$HOME\b/g, os.homedir());
+  return path.resolve(expanded);
+}
+
+function defaultInstanceConfig(): CodexInstanceConfig {
+  return {
+    id: 'default',
+    label: 'Default',
+    codexHome: resolveCodexHomePath(),
+    enabled: true
+  };
+}
+
+function normalizeInstanceId(raw: unknown): string {
+  if (typeof raw !== 'string') return '';
+  const trimmed = raw.trim();
+  if (!trimmed) return '';
+  const safe = trimmed.replace(/[^a-zA-Z0-9._-]/g, '_');
+  return safe.slice(0, 64);
+}
+
+function parseLocalInstanceConfig(filePath: string): InstanceConfigSnapshot {
+  const fallback = defaultInstanceConfig();
+  const out: InstanceConfigSnapshot = {
+    filePath,
+    defaultInstanceId: fallback.id,
+    instances: [fallback]
+  };
+
+  if (!fs.existsSync(filePath)) return out;
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+  } catch (e: any) {
+    return {
+      ...out,
+      warning: `invalid_json:${String(e?.message || e)}`
+    };
+  }
+
+  if (!isRecord(parsed)) {
+    return {
+      ...out,
+      warning: 'invalid_shape'
+    };
+  }
+
+  const baseDir = path.dirname(filePath);
+  const rawInstances = Array.isArray(parsed.instances) ? parsed.instances : [];
+  const byId = new Map<string, CodexInstanceConfig>();
+
+  for (const item of rawInstances) {
+    if (!isRecord(item)) continue;
+    const id = normalizeInstanceId(item.id);
+    if (!id) continue;
+    const rawHome = typeof item.codexHome === 'string' ? item.codexHome.trim() : '';
+    if (!rawHome) continue;
+    const expandedHome = expandUserPath(rawHome);
+    const codexHome = path.isAbsolute(expandedHome)
+      ? path.resolve(expandedHome)
+      : path.resolve(baseDir, expandedHome);
+    const enabled = item.enabled !== false;
+    const label = typeof item.label === 'string' && item.label.trim() ? item.label.trim() : id;
+    byId.set(id, { id, label, codexHome, enabled });
+  }
+
+  if (byId.size === 0) {
+    return {
+      ...out,
+      warning: 'empty_or_invalid_instances'
+    };
+  }
+
+  const instances = Array.from(byId.values());
+  const enabledInstances = instances.filter((i) => i.enabled);
+  if (!enabledInstances.length) {
+    instances[0] = { ...instances[0], enabled: true };
+  }
+
+  const defaultIdRaw = normalizeInstanceId(parsed.defaultInstanceId);
+  const defaultId =
+    instances.find((i) => i.id === defaultIdRaw && i.enabled)?.id ||
+    instances.find((i) => i.enabled)?.id ||
+    instances[0].id;
+
+  return {
+    filePath,
+    defaultInstanceId: defaultId,
+    instances
+  };
+}
+
+function getInstanceConfigSnapshot(): InstanceConfigSnapshot {
+  return parseLocalInstanceConfig(resolveInstancesConfigPath());
+}
+
+function findInstanceById(snapshot: InstanceConfigSnapshot, id: string): CodexInstanceConfig | null {
+  const normalizedId = normalizeInstanceId(id);
+  if (!normalizedId) return null;
+  return snapshot.instances.find((item) => item.id === normalizedId) || null;
+}
+
+function resolveInstanceForChat(snapshot: InstanceConfigSnapshot, chat: { instanceId?: string }): CodexInstanceConfig {
+  const selected = typeof chat.instanceId === 'string' ? findInstanceById(snapshot, chat.instanceId) : null;
+  if (selected && selected.enabled) return selected;
+  const fallback = snapshot.instances.find((item) => item.id === snapshot.defaultInstanceId && item.enabled);
+  if (fallback) return fallback;
+  return snapshot.instances.find((item) => item.enabled) || snapshot.instances[0] || defaultInstanceConfig();
+}
+
+function findNestedRecord(root: unknown, key: string): Record<string, unknown> | null {
+  const seen = new Set<unknown>();
+  const walk = (node: unknown): Record<string, unknown> | null => {
+    if (!isRecord(node)) return null;
+    if (seen.has(node)) return null;
+    seen.add(node);
+    if (isRecord(node[key])) return node[key] as Record<string, unknown>;
+    for (const value of Object.values(node)) {
+      const found = walk(value);
+      if (found) return found;
+    }
+    return null;
+  };
+  return walk(root);
+}
+
+function normalizePercent(value: unknown): number | null {
+  if (typeof value === 'number' && Number.isFinite(value)) return value;
+  if (typeof value === 'string') {
+    const n = Number(value.trim());
+    return Number.isFinite(n) ? n : null;
+  }
+  return null;
+}
+
+function getPrimaryUsedPercent(rateLimits: Record<string, unknown> | null): number | null {
+  const primary = findNestedRecord(rateLimits, 'primary');
+  if (!primary) return null;
+  return normalizePercent(primary.used_percent);
+}
+
+function getInstanceHealth(instance: CodexInstanceConfig): InstanceHealthSnapshot {
+  const cacheKey = `${instance.id}|${instance.codexHome}`;
+  const cached = instanceHealthCache.get(cacheKey);
+  if (cached && cached.expiresAt > Date.now()) return cached.snapshot;
+
+  let loginStatus: string | null = null;
+  let ready = false;
+  try {
+    const run = spawnSync('codex', ['login', 'status'], {
+      encoding: 'utf8',
+      timeout: 1400,
+      env: {
+        ...process.env,
+        CODEX_HOME: instance.codexHome
+      }
+    });
+    const merged = `${run.stdout || ''}${run.stderr || ''}`.trim();
+    const first = merged.split(/\r?\n/).map((line) => line.trim()).find(Boolean) || null;
+    loginStatus = first;
+    ready = run.status === 0 && !/not\s+logged\s+in|logged\s+out/i.test(merged);
+  } catch {
+    ready = false;
+    loginStatus = null;
+  }
+
+  const snapshot: InstanceHealthSnapshot = { ready, loginStatus };
+  instanceHealthCache.set(cacheKey, { expiresAt: Date.now() + INSTANCE_HEALTH_CACHE_TTL_MS, snapshot });
+  return snapshot;
+}
+
+type ResolveCreateInstanceResult =
+  | { ok: true; mode: 'manual' | 'auto'; instance: CodexInstanceConfig }
+  | { ok: false; error: string };
+
+function getInstanceChatLoad(instanceId: string): { total: number; running: number } {
+  const sessions = store.getAllSessions();
+  let total = 0;
+  let running = 0;
+  for (const session of sessions) {
+    const chats = store.listChats(session.id);
+    for (const chat of chats) {
+      if ((chat.instanceId || '') !== instanceId) continue;
+      total += 1;
+      if (store.getStreamRuntime(session.id, chat.id).status === 'running') {
+        running += 1;
+      }
+    }
+  }
+  return { total, running };
+}
+
+function getInstancePressureScore(instance: CodexInstanceConfig): number {
+  const fromHistory = getLatestTokenCountFromCodexHistory(instance.codexHome);
+  const primaryUsed = getPrimaryUsedPercent(fromHistory?.rateLimits || null);
+  if (primaryUsed === null) return 1000;
+  return Math.max(0, Math.min(1000, primaryUsed));
+}
+
+function resolveCreateChatInstance(
+  sid: string,
+  requestedInstanceIdRaw: string | undefined
+): ResolveCreateInstanceResult {
+  void sid;
+  const snapshot = getInstanceConfigSnapshot();
+  const enabledInstances = snapshot.instances.filter((i) => i.enabled);
+  if (!enabledInstances.length) return { ok: false, error: 'no_instance_enabled' };
+
+  const requested = (requestedInstanceIdRaw || '').trim().toLowerCase();
+  if (requested && requested !== 'auto') {
+    const manual = findInstanceById(snapshot, requested);
+    if (!manual) return { ok: false, error: 'instance_not_found' };
+    if (!manual.enabled) return { ok: false, error: 'instance_disabled' };
+    const health = getInstanceHealth(manual);
+    if (!health.ready) return { ok: false, error: 'instance_not_ready' };
+    return { ok: true, mode: 'manual', instance: manual };
+  }
+
+  const readyCandidates = enabledInstances.filter((instance) => getInstanceHealth(instance).ready);
+  const candidates = readyCandidates.length ? readyCandidates : enabledInstances;
+  const ranked = candidates.map((instance) => {
+    const pressure = getInstancePressureScore(instance);
+    const chatLoad = getInstanceChatLoad(instance.id);
+    return {
+      instance,
+      pressure,
+      running: chatLoad.running,
+      total: chatLoad.total
+    };
+  });
+
+  ranked.sort((a, b) => {
+    if (a.pressure !== b.pressure) return a.pressure - b.pressure;
+    if (a.running !== b.running) return a.running - b.running;
+    if (a.total !== b.total) return a.total - b.total;
+    return a.instance.id.localeCompare(b.instance.id);
+  });
+
+  const best = ranked[0];
+  if (!best) return { ok: false, error: 'no_instance_available' };
+  const ties = ranked.filter(
+    (item) => item.pressure === best.pressure && item.running === best.running && item.total === best.total
+  );
+  const picked = ties[(autoInstanceRoundRobinCursor++) % ties.length];
+  return { ok: true, mode: 'auto', instance: picked.instance };
+}
+
 function parseTimestampToMs(raw: unknown): number | null {
   if (typeof raw === 'number') {
     if (!Number.isFinite(raw)) return null;
@@ -415,12 +691,14 @@ function readLatestTokenCountFromSessionFile(filePath: string): CliHistoryStatus
   return null;
 }
 
-function getLatestTokenCountFromCodexHistory(): CliHistoryStatusSnapshot | null {
-  if (cliHistorySnapshotCache && cliHistorySnapshotCache.expiresAt > Date.now()) {
-    return cliHistorySnapshotCache.snapshot;
+function getLatestTokenCountFromCodexHistory(codexHomePath?: string): CliHistoryStatusSnapshot | null {
+  const home = path.resolve(codexHomePath || resolveCodexHomePath());
+  const cached = cliHistorySnapshotCacheByHome.get(home);
+  if (cached && cached.expiresAt > Date.now()) {
+    return cached.snapshot;
   }
 
-  const sessionsDir = path.join(resolveCodexHomePath(), 'sessions');
+  const sessionsDir = path.join(home, 'sessions');
   const files = resolveSessionHistoryCandidates(sessionsDir);
   let snapshot: CliHistoryStatusSnapshot | null = null;
 
@@ -431,10 +709,10 @@ function getLatestTokenCountFromCodexHistory(): CliHistoryStatusSnapshot | null 
     break;
   }
 
-  cliHistorySnapshotCache = {
+  cliHistorySnapshotCacheByHome.set(home, {
     expiresAt: Date.now() + CLI_HISTORY_CACHE_TTL_MS,
     snapshot
-  };
+  });
   return snapshot;
 }
 
@@ -989,11 +1267,17 @@ async function getCliStatusUsage(fallbackUsage: CliStatusUsageFallback = {}): Pr
   }
 }
 
-function getCodexLoginStatusText(): string | null {
+function getCodexLoginStatusText(codexHomePath?: string): string | null {
   try {
     const run = spawnSync('codex', ['login', 'status'], {
       encoding: 'utf8',
-      timeout: 1200
+      timeout: 1200,
+      env: codexHomePath
+        ? {
+          ...process.env,
+          CODEX_HOME: codexHomePath
+        }
+        : process.env
     });
     const out = `${run.stdout || ''}${run.stderr || ''}`.trim();
     if (!out) return null;
@@ -1222,6 +1506,7 @@ app.get('/api/status', async (req, res) => {
       ]);
       return {
         id: c.id,
+        instanceId: c.instanceId || null,
         status: rt.status,
         updatedAt: c.updatedAt,
         usage: usage || undefined,
@@ -1234,7 +1519,10 @@ app.get('/api/status', async (req, res) => {
   const cliStatusUsage = await getCliStatusUsage(localUsageAgg);
   const activeChatId = session.activeChatId || null;
   const activeRuntime = activeChatId ? runtimeByChat.find((item) => item.id === activeChatId) : null;
-  const accountStatus = getCodexLoginStatusText();
+  const activeChat = activeChatId ? store.getChat(sid, activeChatId) : null;
+  const instanceSnapshot = getInstanceConfigSnapshot();
+  const activeInstance = activeChat ? resolveInstanceForChat(instanceSnapshot, activeChat) : null;
+  const accountStatus = getCodexLoginStatusText(activeInstance?.codexHome);
 
   res.json({
     ok: true,
@@ -1257,6 +1545,7 @@ app.get('/api/status', async (req, res) => {
       createdAt: session.createdAt,
       expiresAt: session.expiresAt,
       activeChatId,
+      activeInstanceId: activeChat?.instanceId || null,
       codexSessionId: activeRuntime?.codexSessionId || null
     },
     chats: {
@@ -1321,6 +1610,55 @@ app.get('/api/cli-status', async (_req, res) => {
     usage: fallback.usage || undefined,
     rateLimits: fallback.rateLimits || undefined,
     sessions: sessionItems
+  });
+});
+
+app.get('/api/instances', (req, res) => {
+  const sid = requireAuth(req, res);
+  if (!sid) return;
+  void sid;
+
+  const snapshot = getInstanceConfigSnapshot();
+  const statsByInstance = new Map<string, { chats: number; running: number }>();
+  for (const session of store.getAllSessions()) {
+    for (const chat of store.listChats(session.id)) {
+      const key = chat.instanceId || snapshot.defaultInstanceId;
+      const prev = statsByInstance.get(key) || { chats: 0, running: 0 };
+      prev.chats += 1;
+      if (store.getStreamRuntime(session.id, chat.id).status === 'running') prev.running += 1;
+      statsByInstance.set(key, prev);
+    }
+  }
+
+  const instances = snapshot.instances.map((instance) => {
+    const history = getLatestTokenCountFromCodexHistory(instance.codexHome);
+    const health = getInstanceHealth(instance);
+    const stats = statsByInstance.get(instance.id) || { chats: 0, running: 0 };
+    return {
+      id: instance.id,
+      label: instance.label,
+      enabled: instance.enabled,
+      codexHome: instance.codexHome,
+      isDefault: snapshot.defaultInstanceId === instance.id,
+      ready: health.ready,
+      loginStatus: health.loginStatus,
+      usage: history?.usage || null,
+      rateLimits: history?.rateLimits || null,
+      usageUpdatedAt: history?.timestampMs || null,
+      chats: stats.chats,
+      running: stats.running
+    };
+  });
+
+  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+  res.setHeader('Pragma', 'no-cache');
+  res.setHeader('Expires', '0');
+  res.json({
+    ok: true,
+    sourcePath: snapshot.filePath,
+    warning: snapshot.warning,
+    defaultInstanceId: snapshot.defaultInstanceId,
+    instances
   });
 });
 
@@ -1611,12 +1949,29 @@ app.post('/api/auth/logout', (req, res) => {
   res.json({ ok: true });
 });
 
+const CreateChatSchema = z.object({
+  instanceId: z.string().min(1).max(64).optional()
+});
+
 app.post('/api/chats', (req, res) => {
   const sid = requireAuth(req, res);
   if (!sid) return;
-  const chat = store.createChat(sid);
+
+  const parsed = CreateChatSchema.safeParse(req.body || {});
+  if (!parsed.success) return res.status(400).json({ ok: false, error: 'bad_request' });
+
+  const resolvedInstance = resolveCreateChatInstance(sid, parsed.data.instanceId);
+  if (!resolvedInstance.ok) return res.status(400).json({ ok: false, error: resolvedInstance.error });
+
+  const chat = store.createChat(sid, resolvedInstance.instance.id);
   const cwd = ensureChatWorkingDirectory(sid, chat);
-  res.json({ ok: true, chatId: chat.id, cwd });
+  res.json({
+    ok: true,
+    chatId: chat.id,
+    cwd,
+    instanceId: resolvedInstance.instance.id,
+    mode: resolvedInstance.mode
+  });
 });
 
 const terminalRouteSchema = z.object({
@@ -1966,6 +2321,12 @@ async function startChatTurn(opts: { sid: string; chatId: string; text: string; 
   if (!chat) throw new Error('not_found');
   if (await codex.isBusy(opts.sid, opts.chatId)) throw new Error('chat_busy');
 
+  const instanceSnapshot = getInstanceConfigSnapshot();
+  const instance = resolveInstanceForChat(instanceSnapshot, chat);
+  if (chat.instanceId !== instance.id) {
+    store.setChatInstanceId(opts.sid, opts.chatId, instance.id);
+  }
+
   store.appendMessage(opts.sid, opts.chatId, { role: 'user', text: opts.text });
   const assistantMsg = store.appendMessage(opts.sid, opts.chatId, { role: 'assistant', text: '' });
 
@@ -1984,6 +2345,10 @@ async function startChatTurn(opts: { sid: string; chatId: string; text: string; 
         chatId: opts.chatId,
         prompt: opts.text,
         assistantMessageId: assistantMsg.id,
+        instance: {
+          instanceId: instance.id,
+          codexHome: instance.codexHome
+        },
         config: {
           cwd: chatCwd,
           sandbox: env.CODEX_SANDBOX,

@@ -115,6 +115,10 @@ const StartSchema = z.object({
   chatId: z.string().min(1),
   prompt: z.string().min(1),
   assistantMessageId: z.string().min(1).optional(),
+  instance: z.object({
+    instanceId: z.string().min(1),
+    codexHome: z.string().min(1).optional()
+  }).optional(),
   config: z.object({
     cwd: z.string().optional(),
     sandbox: z.enum(['read-only', 'workspace-write', 'danger-full-access']).optional(),
@@ -160,7 +164,7 @@ app.post('/v1/chats/start', (req, res) => {
   const parsed = StartSchema.safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ ok: false, error: 'bad_request' });
 
-  const { sessionId, chatId, prompt, assistantMessageId, config } = parsed.data;
+  const { sessionId, chatId, prompt, assistantMessageId, instance, config } = parsed.data;
 
   if (codex.isBusy(sessionId, chatId)) {
     return res.status(409).json({ ok: false, error: 'chat_busy' });
@@ -169,7 +173,8 @@ app.post('/v1/chats/start', (req, res) => {
   resetStream(sessionId, chatId);
   appendStreamEvent(sessionId, chatId, 'start', {
     ok: true,
-    assistantMessageId: assistantMessageId || null
+    assistantMessageId: assistantMessageId || null,
+    instanceId: instance?.instanceId || null
   });
 
   void (async () => {
@@ -178,6 +183,12 @@ app.post('/v1/chats/start', (req, res) => {
         sessionId,
         chatId,
         prompt,
+        instance: instance
+          ? {
+            instanceId: instance.instanceId,
+            codexHome: instance.codexHome
+          }
+          : undefined,
         config: {
           cwd: config.cwd,
           sandbox: config.sandbox,

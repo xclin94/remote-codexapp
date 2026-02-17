@@ -15,6 +15,8 @@ type RunnerState = {
   busy: boolean;
   abort?: AbortController;
   sessionConfigKey?: string;
+  instanceId: string;
+  codexHome?: string;
 };
 
 function sessionConfigKey(config: {
@@ -33,6 +35,11 @@ function sessionConfigKey(config: {
   });
 }
 
+type CodexInstanceBinding = {
+  instanceId: string;
+  codexHome?: string;
+};
+
 // One runner per (sessionId, chatId). This keeps Codex session continuity for that chat.
 export class CodexManager {
   private runners = new Map<string, RunnerState>();
@@ -41,11 +48,27 @@ export class CodexManager {
     return `${sessionId}:${chatId}`;
   }
 
-  get(sessionId: string, chatId: string): RunnerState {
+  get(sessionId: string, chatId: string, binding?: CodexInstanceBinding): RunnerState {
     const k = this.key(sessionId, chatId);
     let r = this.runners.get(k);
+    const nextInstanceId = binding?.instanceId || 'default';
+    const nextCodexHome = binding?.codexHome?.trim() || undefined;
+
+    if (r && (r.instanceId !== nextInstanceId || r.codexHome !== nextCodexHome)) {
+      if (r.busy) throw new Error('chat_busy');
+      this.runners.delete(k);
+      r = undefined;
+    }
+
     if (!r) {
-      r = { client: new CodexMcpClient(), busy: false };
+      const env: Record<string, string> = {};
+      if (nextCodexHome) env.CODEX_HOME = nextCodexHome;
+      r = {
+        client: new CodexMcpClient({ env }),
+        busy: false,
+        instanceId: nextInstanceId,
+        codexHome: nextCodexHome
+      };
       this.runners.set(k, r);
     }
     return r;
@@ -87,6 +110,7 @@ export class CodexManager {
     sessionId: string;
     chatId: string;
     prompt: string;
+    instance?: CodexInstanceBinding;
     config: {
       cwd?: string;
       sandbox?: 'read-only' | 'workspace-write' | 'danger-full-access';
@@ -97,7 +121,7 @@ export class CodexManager {
     signal?: AbortSignal;
     onEvent: (e: CodexRunnerEvent) => void;
   }): Promise<{ usage?: CodexUsage; rateLimits?: CodexRateLimits }> {
-    const r = this.get(opts.sessionId, opts.chatId);
+    const r = this.get(opts.sessionId, opts.chatId, opts.instance);
     if (r.busy) throw new Error('chat_busy');
     r.busy = true;
     r.abort = new AbortController();

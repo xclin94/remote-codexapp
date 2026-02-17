@@ -1,0 +1,23 @@
+{
+  "defaultInstanceId": "acc1",
+  "instances": [
+    {
+      "id": "acc1",
+      "label": "Primary Account",
+      "codexHome": "/root/.codex",
+      "enabled": true
+    },
+    {
+      "id": "acc2",
+      "label": "Second Account",
+      "codexHome": "/root/.codex-a2",
+      "enabled": true
+    },
+    {
+      "id": "acc3",
+      "label": "Third Account",
+      "codexHome": "/root/.codex-a3",
+      "enabled": true
+    }
+  ]
+}

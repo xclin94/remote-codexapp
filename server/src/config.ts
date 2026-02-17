@@ -38,6 +38,9 @@ const EnvSchema = z.object({
   CODEX_SANDBOX: z.enum(['read-only', 'workspace-write', 'danger-full-access']).default('danger-full-access'),
   CODEX_APPROVAL_POLICY: z.enum(['untrusted', 'on-failure', 'on-request', 'never']).default('never'),
   CODEX_CLI_STATUS_URL: z.preprocess(emptyToUndefined, z.string().optional()),
+  // Optional JSON file for local multi-account instance routing.
+  // If unset, defaults to $HOME/.codex-remoteapp/instances.local.json.
+  CODEX_INSTANCES_FILE: z.preprocess(emptyToUndefined, z.string().optional()),
   CODEX_SESSIOND_HOST: z.string().default('127.0.0.1'),
   CODEX_SESSIOND_PORT: z.coerce.number().int().positive().default(18999),
   CODEX_SESSIOND_AUTO_START: z.coerce.boolean().default(true),

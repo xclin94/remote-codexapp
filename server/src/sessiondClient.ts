@@ -221,6 +221,10 @@ export class SessiondClient {
     chatId: string;
     prompt: string;
     assistantMessageId?: string;
+    instance?: {
+      instanceId: string;
+      codexHome?: string;
+    };
     config: {
       cwd?: string;
       sandbox?: 'read-only' | 'workspace-write' | 'danger-full-access';
@@ -243,6 +247,7 @@ export class SessiondClient {
           chatId: opts.chatId,
           prompt: opts.prompt,
           assistantMessageId: opts.assistantMessageId,
+          instance: opts.instance,
           config: opts.config
         },
         allowConflict: true

@@ -55,6 +55,7 @@ export type Chat = {
   createdAt: number;
   updatedAt: number;
   title?: string;
+  instanceId?: string;
   messages: ChatMessage[];
   settings: ChatSettings;
 };
@@ -175,6 +176,7 @@ export class MemoryStore {
       typeof (v as Chat).createdAt === 'number' &&
       typeof (v as Chat).updatedAt === 'number' &&
       ((v as Chat).title === undefined || typeof (v as Chat).title === 'string') &&
+      ((v as Chat).instanceId === undefined || typeof (v as Chat).instanceId === 'string') &&
       Array.isArray((v as Chat).messages) &&
       typeof (v as Chat).settings === 'object' &&
       (v as Chat).settings !== null
@@ -257,6 +259,7 @@ export class MemoryStore {
               createdAt: chatValue.createdAt,
               updatedAt: chatValue.updatedAt,
               title: typeof chatValue.title === 'string' ? chatValue.title : undefined,
+              instanceId: typeof chatValue.instanceId === 'string' ? chatValue.instanceId : undefined,
               messages: safeMessages,
               settings: safeSettings
             };
@@ -590,10 +593,17 @@ export class MemoryStore {
     };
   }
 
-  createChat(sessionId: string): Chat {
+  createChat(sessionId: string, instanceId?: string): Chat {
     const id = nanoid(14);
     const now = this.now();
-    const chat: Chat = { id, createdAt: now, updatedAt: now, messages: [], settings: {} };
+    const chat: Chat = {
+      id,
+      createdAt: now,
+      updatedAt: now,
+      instanceId: typeof instanceId === 'string' && instanceId.trim() ? instanceId.trim() : undefined,
+      messages: [],
+      settings: {}
+    };
     const m = this.getChatsMapForSession(sessionId);
     m.set(id, chat);
     const s = this.getSession(sessionId);
@@ -605,13 +615,21 @@ export class MemoryStore {
     return chat;
   }
 
-  listChats(sessionId: string): { id: string; updatedAt: number; createdAt: number; preview?: string; title?: string }[] {
+  listChats(sessionId: string): {
+    id: string;
+    updatedAt: number;
+    createdAt: number;
+    preview?: string;
+    title?: string;
+    instanceId?: string;
+  }[] {
     const m = this.getChatsMapForSession(sessionId);
     const arr = Array.from(m.values()).map((c) => ({
       id: c.id,
       createdAt: c.createdAt,
       updatedAt: c.updatedAt,
       title: c.title,
+      instanceId: c.instanceId,
       preview: c.messages.slice(-1)[0]?.text
     }));
     arr.sort((a, b) => b.updatedAt - a.updatedAt);
@@ -656,6 +674,17 @@ export class MemoryStore {
   getChat(sessionId: string, chatId: string): Chat | null {
     const m = this.getChatsMapForSession(sessionId);
     return m.get(chatId) || null;
+  }
+
+  setChatInstanceId(sessionId: string, chatId: string, instanceId: string): Chat {
+    const chat = this.getChat(sessionId, chatId);
+    if (!chat) throw new Error('chat_not_found');
+    const next = instanceId.trim();
+    if (!next) throw new Error('bad_instance');
+    chat.instanceId = next;
+    chat.updatedAt = this.now();
+    this.markForPersist();
+    return chat;
   }
 
   updateChatSettings(sessionId: string, chatId: string, patch: ChatSettingsPatch): ChatSettings {

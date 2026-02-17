@@ -13,6 +13,7 @@ This project is a small Node.js + React frontend/backend app that exposes Codex 
 - TOTP login with first-login QR setup
 - Persistent sessions/chats via `DATA_DIR` (default: `data`)
 - `/status` command support with usage/rate-limit status
+- Local multi-instance routing (per-session sticky binding + auto rotation for new sessions)
 - `/web help` in chat for web-only commands
 - Interactive terminal (WebSocket + PTY) with session-scoped terminal tabs
 - Terminal management APIs (`POST /api/terminal`, `GET /api/terminals`, `GET /ws/terminal`)
@@ -85,6 +86,37 @@ node -e "const { authenticator } = require('otplib'); console.log(authenticator.
 - `/web status`
 - `/resume`
 - `/status` is handled server-side and shows live status for running sessions
+
+## Multi-Instance Accounts (Local Config, No Secrets in Git)
+
+You can bind different Codex CLI accounts by using separate `CODEX_HOME` directories and a local config file:
+
+1. Login each account into its own home:
+
+```bash
+CODEX_HOME=/root/.codex-a2 codex login --device-auth
+CODEX_HOME=/root/.codex-a3 codex login --device-auth
+```
+
+2. Create local instance config (outside repo by default):
+
+```bash
+mkdir -p ~/.codex-remoteapp
+cp server/instances.local.example.json ~/.codex-remoteapp/instances.local.json
+# edit paths/ids/labels
+```
+
+3. Optional explicit path in `server/.env`:
+
+```bash
+CODEX_INSTANCES_FILE=$HOME/.codex-remoteapp/instances.local.json
+```
+
+Behavior:
+- New sessions can choose a specific instance or `Auto`.
+- `Auto` rotates by quota pressure + current load.
+- Each chat session is sticky to one instance (no context loss from mid-session switching).
+- Web UI has an `Instances` manager panel (login/health/quota/chat load).
 
 ### Credential login
 
@@ -200,6 +232,7 @@ CODEREMOTEAPP_LOG=/path/to/log npm run restart
 
 - `GET /api/me`
 - `POST /api/chats` (create chat)
+- `GET /api/instances` (instance status, quota, load)
 - `GET /api/chats`
 - `GET /api/chats/:id`
 - `POST /api/chats/:id/send`

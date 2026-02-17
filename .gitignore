@@ -3,6 +3,8 @@ node_modules
 
 # local env
 server/.env
+server/instances.local.json
+server/data/instances.local.json
 
 # builds
 web/dist
