@@ -1849,7 +1849,7 @@ function Chat(props: { chatId: string; sessionId: string; onSwitchChat: (chatId:
             <div className="spacer" />
             {!isTerminalView ? (
               <button className="btn btn-secondary btn-sm" onClick={() => setControlsOpen((v) => !v)}>
-                Settings
+                {controlsOpen ? 'Hide Settings' : 'Settings'}
               </button>
             ) : null}
             {!isTerminalView ? (
@@ -1878,7 +1878,7 @@ function Chat(props: { chatId: string; sessionId: string; onSwitchChat: (chatId:
         <div className={`controls ${controlsOpen ? 'open' : 'closed'}`}>
           <div className="controls-head">
             <div className="ctl-label">Settings</div>
-            <button className="btn btn-secondary btn-sm" onClick={() => setControlsOpen(false)}>
+            <button className="btn btn-secondary btn-sm" type="button" onClick={() => setControlsOpen(false)}>
               Back to Chat
             </button>
           </div>
@@ -2201,7 +2201,14 @@ function Chat(props: { chatId: string; sessionId: string; onSwitchChat: (chatId:
           </div>
         ) : null}
 
-        <div className="chat" ref={chatRef} onScroll={onChatScroll}>
+        <div
+          className="chat"
+          ref={chatRef}
+          onScroll={onChatScroll}
+          onClick={() => {
+            if (controlsOpen) setControlsOpen(false);
+          }}
+        >
           {visibleMessages.map((m) => (
             <MessageRow
               key={m.id}
