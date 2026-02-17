@@ -44,6 +44,7 @@ export type Chat = {
   id: string;
   createdAt: number;
   updatedAt: number;
+  title?: string;
   messages: ChatMessage[];
   messagesStart?: number;
   messagesTotal?: number;
@@ -231,13 +232,13 @@ export async function deleteChat(chatId: string): Promise<void> {
   if (!r.ok || !j.ok) throw new Error(j.error || 'delete_failed');
 }
 
-export async function listChats(): Promise<{ id: string; updatedAt: number; createdAt: number; preview?: string }[]> {
+export async function listChats(): Promise<{ id: string; updatedAt: number; createdAt: number; preview?: string; title?: string }[]> {
   const r = await fetch(apiUrl('/api/chats'), {
     credentials: 'include'
   });
   const j = await r.json().catch(() => ({}));
   if (!r.ok || !j.ok || !Array.isArray(j.chats)) throw new Error(j.error || 'failed');
-  return j.chats as { id: string; updatedAt: number; createdAt: number; preview?: string }[];
+  return j.chats as { id: string; updatedAt: number; createdAt: number; preview?: string; title?: string }[];
 }
 
 export async function setActiveChat(chatId: string): Promise<void> {
@@ -249,6 +250,18 @@ export async function setActiveChat(chatId: string): Promise<void> {
   });
   const j = await r.json().catch(() => ({}));
   if (!r.ok || !j.ok) throw new Error(j.error || 'failed');
+}
+
+export async function renameChat(chatId: string, title: string | null): Promise<{ ok: boolean; title?: string | null; error?: string }> {
+  const r = await fetch(apiUrl(`/api/chats/${encodeURIComponent(chatId)}/rename`), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    credentials: 'include',
+    body: JSON.stringify({ title })
+  });
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) return { ok: false, error: j.error || 'failed' };
+  return j as { ok: boolean; title?: string | null; error?: string };
 }
 
 export async function getChat(chatId: string, opts?: { tail?: number }): Promise<Chat> {
@@ -279,7 +292,10 @@ export async function getDefaults(): Promise<{ ok: boolean; defaults?: Defaults 
 }
 
 export async function getStatus(): Promise<{ ok: boolean; status?: CliStatus; error?: string }> {
-  const r = await fetch(apiUrl('/api/status'), { credentials: 'include' });
+  const r = await fetch(`${apiUrl('/api/status')}?ts=${Date.now()}`, {
+    credentials: 'include',
+    cache: 'no-store'
+  });
   if (!r.ok) return { ok: false, error: `http_${r.status}` };
   const j = await r.json().catch(() => ({}));
   if (!j || !j.ok) return { ok: false, error: j?.error || 'failed' };

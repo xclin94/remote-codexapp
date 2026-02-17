@@ -54,6 +54,7 @@ export type Chat = {
   id: string;
   createdAt: number;
   updatedAt: number;
+  title?: string;
   messages: ChatMessage[];
   settings: ChatSettings;
 };
@@ -173,6 +174,7 @@ export class MemoryStore {
       typeof (v as Chat).id === 'string' &&
       typeof (v as Chat).createdAt === 'number' &&
       typeof (v as Chat).updatedAt === 'number' &&
+      ((v as Chat).title === undefined || typeof (v as Chat).title === 'string') &&
       Array.isArray((v as Chat).messages) &&
       typeof (v as Chat).settings === 'object' &&
       (v as Chat).settings !== null
@@ -254,6 +256,7 @@ export class MemoryStore {
               id: chatValue.id,
               createdAt: chatValue.createdAt,
               updatedAt: chatValue.updatedAt,
+              title: typeof chatValue.title === 'string' ? chatValue.title : undefined,
               messages: safeMessages,
               settings: safeSettings
             };
@@ -602,16 +605,30 @@ export class MemoryStore {
     return chat;
   }
 
-  listChats(sessionId: string): { id: string; updatedAt: number; createdAt: number; preview?: string }[] {
+  listChats(sessionId: string): { id: string; updatedAt: number; createdAt: number; preview?: string; title?: string }[] {
     const m = this.getChatsMapForSession(sessionId);
     const arr = Array.from(m.values()).map((c) => ({
       id: c.id,
       createdAt: c.createdAt,
       updatedAt: c.updatedAt,
+      title: c.title,
       preview: c.messages.slice(-1)[0]?.text
     }));
     arr.sort((a, b) => b.updatedAt - a.updatedAt);
     return arr;
+  }
+
+  renameChat(sessionId: string, chatId: string, title?: string): Chat {
+    const chat = this.getChat(sessionId, chatId);
+    if (!chat) throw new Error('chat_not_found');
+    if (title && title.trim()) {
+      chat.title = title.trim();
+    } else {
+      delete chat.title;
+    }
+    chat.updatedAt = this.now();
+    this.markForPersist();
+    return chat;
   }
 
   deleteChat(sessionId: string, chatId: string): boolean {

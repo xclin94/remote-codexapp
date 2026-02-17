@@ -218,4 +218,12 @@ export class CodexManager {
     const r = this.runners.get(this.key(sessionId, chatId));
     return r?.client.getLastRateLimits() || null;
   }
+
+  getChatSessionState(
+    sessionId: string,
+    chatId: string
+  ): { sessionId: string | null; conversationId: string | null } | null {
+    const r = this.runners.get(this.key(sessionId, chatId));
+    return r ? r.client.getSessionState() : null;
+  }
 }

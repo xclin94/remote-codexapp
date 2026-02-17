@@ -83,7 +83,7 @@ type TerminalRuntime = {
 const terminalRuntimeById = new Map<string, TerminalRuntime>();
 const terminalWss = new WebSocketServer({ noServer: true });
 
-const CLI_HISTORY_CACHE_TTL_MS = 30_000;
+const CLI_HISTORY_CACHE_TTL_MS = 1_500;
 const CLI_HISTORY_SCAN_FILE_LIMIT = 200;
 const COMPACT_KEEP_LAST_DEFAULT = 8;
 const COMPACT_SUMMARY_MAX_CHARS = 2_000;
@@ -1203,6 +1203,9 @@ app.get('/api/me', (req, res) => {
 app.get('/api/status', async (req, res) => {
   const sid = requireAuth(req, res);
   if (!sid) return;
+  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+  res.setHeader('Pragma', 'no-cache');
+  res.setHeader('Expires', '0');
 
   const session = store.getSession(sid);
   if (!session) return res.status(404).json({ ok: false, error: 'session_not_found' });
@@ -1923,6 +1926,10 @@ const ActiveChatSchema = z.object({
   chatId: z.string().min(1)
 });
 
+const RenameChatSchema = z.object({
+  title: z.union([z.string().max(80), z.null()])
+});
+
 app.get('/api/session/active-chat', (req, res) => {
   const sid = requireAuth(req, res);
   if (!sid) return;
@@ -1937,6 +1944,21 @@ app.post('/api/session/active-chat', (req, res) => {
   const ok = store.setActiveChatId(sid, parsed.data.chatId);
   if (!ok) return res.status(404).json({ ok: false, error: 'not_found' });
   res.json({ ok: true });
+});
+
+app.post('/api/chats/:chatId/rename', (req, res) => {
+  const sid = requireAuth(req, res);
+  if (!sid) return;
+  const chat = store.getChat(sid, req.params.chatId);
+  if (!chat) return res.status(404).json({ ok: false, error: 'not_found' });
+
+  const parsed = RenameChatSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ ok: false, error: 'bad_request' });
+
+  const rawTitle = parsed.data.title;
+  const nextTitle = typeof rawTitle === 'string' ? rawTitle.trim().slice(0, 80) : '';
+  const updated = store.renameChat(sid, req.params.chatId, nextTitle || undefined);
+  res.json({ ok: true, title: updated.title || null });
 });
 
 async function startChatTurn(opts: { sid: string; chatId: string; text: string; model?: string }) {

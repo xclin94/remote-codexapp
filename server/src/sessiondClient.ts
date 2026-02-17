@@ -372,4 +372,20 @@ export class SessiondClient {
     );
     return body.rateLimits || null;
   }
+
+  async getChatSessionState(
+    sessionId: string,
+    chatId: string
+  ): Promise<{ sessionId: string | null; conversationId: string | null } | null> {
+    const q = new URLSearchParams({ sessionId, chatId }).toString();
+    const body = await this.requestJson<{
+      ok: boolean;
+      session?: { sessionId?: string | null; conversationId?: string | null } | null;
+    }>(`/v1/chats/session?${q}`);
+    if (!body?.session) return null;
+    return {
+      sessionId: typeof body.session.sessionId === 'string' ? body.session.sessionId : null,
+      conversationId: typeof body.session.conversationId === 'string' ? body.session.conversationId : null
+    };
+  }
 }

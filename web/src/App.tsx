@@ -24,6 +24,7 @@ import {
   getTotpUri,
   logout,
   resetChatSession,
+  renameChat,
   setActiveChat,
   sendMessageAsync,
   totpVerify,
@@ -534,6 +535,7 @@ function Chat(props: { chatId: string; sessionId: string; onSwitchChat: (chatId:
   const LOAD_MORE_COUNT = 15;
   const INITIAL_SESSION_RENDER_COUNT = 120;
   const SESSION_RENDER_STEP = 120;
+  type ChatListItem = { id: string; updatedAt: number; createdAt: number; preview?: string; title?: string };
 
   type ActivityItem = {
     ts: number;
@@ -542,7 +544,7 @@ function Chat(props: { chatId: string; sessionId: string; onSwitchChat: (chatId:
     source: 'progress' | 'codex_event';
   };
 
-  const [chatList, setChatList] = useState<{ id: string; updatedAt: number; createdAt: number; preview?: string }[]>([]);
+  const [chatList, setChatList] = useState<ChatListItem[]>([]);
   const [terminalList, setTerminalList] = useState<TerminalSession[]>([]);
   const [chatListBusy, setChatListBusy] = useState(false);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -711,7 +713,7 @@ function Chat(props: { chatId: string; sessionId: string; onSwitchChat: (chatId:
   };
 
   const refreshChatList = async () => {
-    let chats: { id: string; updatedAt: number; createdAt: number; preview?: string }[] = [];
+    let chats: ChatListItem[] = [];
     try {
       setChatListBusy(true);
       const chatResult = await listChats();
@@ -770,6 +772,23 @@ function Chat(props: { chatId: string; sessionId: string; onSwitchChat: (chatId:
     }
   };
 
+  const renameSession = async (chat: ChatListItem) => {
+    const current = (chat.title || '').trim();
+    const input = window.prompt('Rename session (1-80 chars, empty to clear):', current);
+    if (input === null) return;
+    const trimmed = input.trim();
+    try {
+      const r = await renameChat(chat.id, trimmed ? trimmed.slice(0, 80) : null);
+      if (!r.ok) {
+        setErr(r.error || 'rename_failed');
+        return;
+      }
+      await refreshChatList();
+    } catch (e: any) {
+      setErr(String(e?.message || e));
+    }
+  };
+
   const createNewTerminal = async () => {
     try {
       const cwd = settings.cwd || defaults?.cwd || undefined;
@@ -812,6 +831,8 @@ function Chat(props: { chatId: string; sessionId: string; onSwitchChat: (chatId:
     setActiveTerminal(null);
     if (chatId !== props.chatId) {
       void props.onSwitchChat(chatId);
+    } else {
+      scrollChatToLatest('auto');
     }
     setMobileChatListOpen(false);
   };
@@ -1071,6 +1092,8 @@ function Chat(props: { chatId: string; sessionId: string; onSwitchChat: (chatId:
       setStreamStatus('connected');
       setQueueState({ sid: props.sessionId, chatId: props.chatId, prompts: loadQueuedPrompts(props.sessionId, props.chatId) });
       setRenderCount(INITIAL_RENDER_COUNT);
+      historyLoadRef.current = null;
+      historyLoadingRef.current = false;
       setRuntimeStatus('');
       setRuntimeLastEventId(0);
       setLastUpdateAt(0);
@@ -1138,6 +1161,8 @@ function Chat(props: { chatId: string; sessionId: string; onSwitchChat: (chatId:
     })().catch((e) => setErr(String(e?.message || e)));
     return () => {
       cancelled = true;
+      historyLoadRef.current = null;
+      historyLoadingRef.current = false;
       stopPolling();
       closeStream();
     };
@@ -1476,6 +1501,16 @@ function Chat(props: { chatId: string; sessionId: string; onSwitchChat: (chatId:
     await sendPrompt(text);
   };
 
+  const jumpToTop = () => {
+    const el = chatRef.current;
+    if (!el) return;
+    el.scrollTop = 0;
+  };
+
+  const jumpToBottom = () => {
+    scrollChatToLatest('auto');
+  };
+
   useEffect(() => {
     if (busy || startTurnRef.current || queuedPrompts.length === 0) return;
     const [next, ...rest] = queuedPrompts;
@@ -1483,13 +1518,17 @@ function Chat(props: { chatId: string; sessionId: string; onSwitchChat: (chatId:
     void startTurn(next, { fromQueue: true });
   }, [busy, queuedPrompts]);
 
-  const chatOptionLabel = (chat: { id: string; preview?: string; updatedAt: number }) => {
+  const chatOptionLabel = (chat: ChatListItem) => {
     const shortId = chat.id.slice(0, 6);
+    const title = (chat.title || '').trim();
+    if (title) return `${shortId}  ${title.slice(0, 40)}`;
     const preview = (chat.preview || '').replace(/\s+/g, ' ').trim();
     if (preview) return `${shortId}  ${preview.slice(0, 40)}`;
     return `${shortId}  ${new Date(chat.updatedAt).toLocaleTimeString()}`;
   };
-  const sessionTabLabel = (chat: { id: string; preview?: string; updatedAt: number }) => {
+  const sessionTabLabel = (chat: ChatListItem) => {
+    const title = (chat.title || '').trim();
+    if (title) return title.slice(0, 42);
     const preview = (chat.preview || '').replace(/\s+/g, ' ').trim();
     if (preview) return preview.slice(0, 42);
     return new Date(chat.updatedAt).toLocaleTimeString();
@@ -1573,17 +1612,30 @@ function Chat(props: { chatId: string; sessionId: string; onSwitchChat: (chatId:
                   <span className="session-tab-id">{chat.id.slice(0, 6)}</span>
                   <span className="session-tab-preview">{sessionTabLabel(chat)}</span>
                 </button>
-                <button
-                  className="btn btn-secondary btn-sm"
-                  type="button"
-                  disabled={chatListBusy}
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    void removeChat(chat.id);
-                  }}
-                >
-                  Delete
-                </button>
+                <div className="session-row-actions">
+                  <button
+                    className="btn btn-secondary btn-sm"
+                    type="button"
+                    disabled={chatListBusy}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      void renameSession(chat);
+                    }}
+                  >
+                    Rename
+                  </button>
+                  <button
+                    className="btn btn-secondary btn-sm"
+                    type="button"
+                    disabled={chatListBusy}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      void removeChat(chat.id);
+                    }}
+                  >
+                    Delete
+                  </button>
+                </div>
               </div>
             )) : null}
             {chatList.length > visibleChatList.length ? (
@@ -2062,6 +2114,12 @@ function Chat(props: { chatId: string; sessionId: string; onSwitchChat: (chatId:
                 Session
               </button>
             ) : null}
+            <button className="btn btn-secondary" onClick={jumpToTop}>
+              Top
+            </button>
+            <button className="btn btn-secondary" onClick={jumpToBottom}>
+              Bottom
+            </button>
             <button className="btn btn-secondary" onClick={() => setFullscreenMode((v) => !v)}>
               {fullscreenMode ? 'Normal' : 'Full'}
             </button>

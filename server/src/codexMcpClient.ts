@@ -176,6 +176,13 @@ export class CodexMcpClient {
     return this.sessionId !== null;
   }
 
+  getSessionState(): { sessionId: string | null; conversationId: string | null } {
+    return {
+      sessionId: this.sessionId,
+      conversationId: this.conversationId
+    };
+  }
+
   hasPendingApprovals(): boolean {
     return this.pendingApprovals.size > 0;
   }

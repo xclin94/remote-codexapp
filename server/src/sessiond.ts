@@ -260,6 +260,14 @@ app.get('/v1/chats/rate-limits', (req, res) => {
   res.json({ ok: true, rateLimits: codex.getChatRateLimits(sessionId, chatId) || null });
 });
 
+app.get('/v1/chats/session', (req, res) => {
+  const parsed = UsageQuerySchema.safeParse(req.query);
+  if (!parsed.success) return res.status(400).json({ ok: false, error: 'bad_request' });
+  const { sessionId, chatId } = parsed.data;
+  const state = codex.getChatSessionState(sessionId, chatId) || { sessionId: null, conversationId: null };
+  res.json({ ok: true, session: state });
+});
+
 app.post('/v1/chats/abort', (req, res) => {
   const parsed = AbortSchema.safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ ok: false, error: 'bad_request' });
