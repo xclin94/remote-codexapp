@@ -28,6 +28,7 @@ import {
   renameChat,
   setActiveChat,
   sendMessageAsync,
+  switchChatInstance,
   totpVerify,
   updateChatSettings,
   type ChatMessage,
@@ -644,6 +645,8 @@ function Chat(props: { chatId: string; sessionId: string; onSwitchChat: (chatId:
   const [instancePanelOpen, setInstancePanelOpen] = useState(false);
   const [instanceLoading, setInstanceLoading] = useState(false);
   const [instanceError, setInstanceError] = useState<string>('');
+  const [sessionInstanceTarget, setSessionInstanceTarget] = useState<string>('auto');
+  const [instanceSwitching, setInstanceSwitching] = useState(false);
 
   const chatRef = useRef<HTMLDivElement | null>(null);
   const bottomRef = useRef<HTMLDivElement | null>(null);
@@ -819,6 +822,33 @@ function Chat(props: { chatId: string; sessionId: string; onSwitchChat: (chatId:
     const selected = instanceSelectValue.trim();
     if (!selected || selected === 'auto') return createChat('auto');
     return createChat(selected);
+  };
+
+  const switchCurrentChatInstance = async (nextInstanceId: string) => {
+    const target = (nextInstanceId || '').trim() || 'auto';
+    if (busy || startTurnRef.current) {
+      setErr('Cannot switch instance while a turn is running.');
+      return;
+    }
+    try {
+      setInstanceSwitching(true);
+      const r = await switchChatInstance(props.chatId, target);
+      if (!r.ok) {
+        setErr(r.error || 'instance_switch_failed');
+        return;
+      }
+      const applied = r.instanceId || target;
+      setSessionInstanceTarget(applied);
+      setUiStatus(`Instance -> ${applied}`);
+      addSystem(`Session instance switched -> ${applied} (${r.mode || 'manual'})`);
+      await refreshChatList();
+      await refreshInstances();
+      await syncNow();
+    } catch (e: any) {
+      setErr(String(e?.message || e));
+    } finally {
+      setInstanceSwitching(false);
+    }
   };
 
   const removeChat = async (chatId: string) => {
@@ -1621,6 +1651,10 @@ function Chat(props: { chatId: string; sessionId: string; onSwitchChat: (chatId:
   const visibleSessionLimit = activeChatIndex >= 0 ? Math.max(sessionRenderCount, activeChatIndex + 1) : sessionRenderCount;
   const visibleChatList = chatList.slice(0, Math.max(INITIAL_SESSION_RENDER_COUNT, visibleSessionLimit));
 
+  useEffect(() => {
+    setSessionInstanceTarget(activeChatInstanceId || 'auto');
+  }, [props.chatId, activeChatInstanceId]);
+
   const modelOptions = defaults?.modelOptions || [];
   const effectiveModel = settings.model || defaults?.model || '';
   const effectiveReasoningEffort = settings.reasoningEffort || defaults?.reasoningEffort || '';
@@ -2036,6 +2070,30 @@ function Chat(props: { chatId: string; sessionId: string; onSwitchChat: (chatId:
 
           <div className="ctl ctl-right">
             <div className="ctl-label">Session</div>
+            <select
+              className="input input-sm"
+              style={{ minWidth: 170 }}
+              value={sessionInstanceTarget}
+              onChange={(e) => setSessionInstanceTarget(e.target.value)}
+              disabled={busy || instanceSwitching}
+              title="Current session instance target"
+            >
+              <option value="auto">Auto</option>
+              {instanceItems
+                .filter((item) => item.enabled)
+                .map((item) => (
+                  <option key={item.id} value={item.id}>
+                    {item.label} ({item.id})
+                  </option>
+                ))}
+            </select>
+            <button
+              className="btn btn-secondary btn-sm"
+              disabled={busy || instanceSwitching}
+              onClick={() => void switchCurrentChatInstance(sessionInstanceTarget)}
+            >
+              {instanceSwitching ? 'Switching...' : 'Switch Instance'}
+            </button>
             <button
               className="btn btn-secondary btn-sm"
               disabled={busy}
@@ -2380,6 +2438,15 @@ function Chat(props: { chatId: string; sessionId: string; onSwitchChat: (chatId:
                 </div>
                 <div className="instance-row">
                   {formatInstanceQuotaSummary(item)}
+                </div>
+                <div className="instance-row">
+                  <button
+                    className="btn btn-secondary btn-sm"
+                    disabled={busy || instanceSwitching || !item.enabled}
+                    onClick={() => void switchCurrentChatInstance(item.id)}
+                  >
+                    Use For Current Session
+                  </button>
                 </div>
               </div>
             ))}

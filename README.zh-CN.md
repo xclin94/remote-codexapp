@@ -114,6 +114,7 @@ CODEX_INSTANCES_FILE=$HOME/.codex-remoteapp/instances.local.json
 - 新建 Session 时可以选指定实例或 `Auto`
 - `Auto` 会按额度压力 + 当前负载做轮转
 - 单个会话固定绑定一个实例（避免中途切换导致上下文丢失）
+- 已有会话可在 Web UI 的 `Session -> Switch Instance` 切换实例，后端会重置该会话的 Codex session
 - Web 端提供 `Instances` 管理面板，可查看登录状态、额度和会话负载
 
 ### 凭据登录（Credential）
@@ -230,6 +231,7 @@ CODEREMOTEAPP_LOG=/path/to/log npm run restart
 
 - `GET /api/me`
 - `POST /api/chats`
+- `POST /api/chats/:id/instance`（切换已有会话实例）
 - `GET /api/instances`（实例状态/额度/负载）
 - `GET /api/chats`
 - `GET /api/chats/:id`

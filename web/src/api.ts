@@ -305,6 +305,21 @@ export async function renameChat(chatId: string, title: string | null): Promise<
   return j as { ok: boolean; title?: string | null; error?: string };
 }
 
+export async function switchChatInstance(
+  chatId: string,
+  instanceId: string
+): Promise<{ ok: boolean; chatId?: string; instanceId?: string; mode?: 'manual' | 'auto'; error?: string }> {
+  const r = await fetch(apiUrl(`/api/chats/${encodeURIComponent(chatId)}/instance`), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    credentials: 'include',
+    body: JSON.stringify({ instanceId })
+  });
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) return { ok: false, error: j.error || `http_${r.status}` };
+  return j as { ok: boolean; chatId?: string; instanceId?: string; mode?: 'manual' | 'auto'; error?: string };
+}
+
 export async function getChat(chatId: string, opts?: { tail?: number }): Promise<Chat> {
   const q = new URLSearchParams();
   if (typeof opts?.tail === 'number' && Number.isFinite(opts.tail) && opts.tail > 0) {

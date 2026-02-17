@@ -2285,6 +2285,10 @@ const RenameChatSchema = z.object({
   title: z.union([z.string().max(80), z.null()])
 });
 
+const SwitchChatInstanceSchema = z.object({
+  instanceId: z.string().min(1).max(64)
+});
+
 app.get('/api/session/active-chat', (req, res) => {
   const sid = requireAuth(req, res);
   if (!sid) return;
@@ -2314,6 +2318,44 @@ app.post('/api/chats/:chatId/rename', (req, res) => {
   const nextTitle = typeof rawTitle === 'string' ? rawTitle.trim().slice(0, 80) : '';
   const updated = store.renameChat(sid, req.params.chatId, nextTitle || undefined);
   res.json({ ok: true, title: updated.title || null });
+});
+
+app.post('/api/chats/:chatId/instance', async (req, res) => {
+  const sid = requireAuth(req, res);
+  if (!sid) return;
+  const chatId = req.params.chatId;
+  const chat = store.getChat(sid, chatId);
+  if (!chat) return res.status(404).json({ ok: false, error: 'not_found' });
+
+  const parsed = SwitchChatInstanceSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ ok: false, error: 'bad_request' });
+
+  const stream = store.getStreamRuntime(sid, chatId);
+  if (stream.status === 'running') return res.status(409).json({ ok: false, error: 'chat_busy' });
+  if (await codex.isBusy(sid, chatId).catch(() => false)) {
+    return res.status(409).json({ ok: false, error: 'chat_busy' });
+  }
+
+  const resolved = resolveCreateChatInstance(sid, parsed.data.instanceId);
+  if (!resolved.ok) return res.status(400).json({ ok: false, error: resolved.error });
+
+  if ((chat.instanceId || '') === resolved.instance.id) {
+    return res.json({
+      ok: true,
+      chatId,
+      instanceId: resolved.instance.id,
+      mode: resolved.mode
+    });
+  }
+
+  store.setChatInstanceId(sid, chatId, resolved.instance.id);
+  await codex.reset(sid, chatId).catch(() => undefined);
+  res.json({
+    ok: true,
+    chatId,
+    instanceId: resolved.instance.id,
+    mode: resolved.mode
+  });
 });
 
 async function startChatTurn(opts: { sid: string; chatId: string; text: string; model?: string }) {

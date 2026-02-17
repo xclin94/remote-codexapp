@@ -116,6 +116,7 @@ Behavior:
 - New sessions can choose a specific instance or `Auto`.
 - `Auto` rotates by quota pressure + current load.
 - Each chat session is sticky to one instance (no context loss from mid-session switching).
+- Existing chat sessions can switch instance from the web UI (`Session -> Switch Instance`), and the backend resets that chat's Codex session.
 - Web UI has an `Instances` manager panel (login/health/quota/chat load).
 
 ### Credential login
@@ -232,6 +233,7 @@ CODEREMOTEAPP_LOG=/path/to/log npm run restart
 
 - `GET /api/me`
 - `POST /api/chats` (create chat)
+- `POST /api/chats/:id/instance` (switch existing chat to another instance)
 - `GET /api/instances` (instance status, quota, load)
 - `GET /api/chats`
 - `GET /api/chats/:id`
