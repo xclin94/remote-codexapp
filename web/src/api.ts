@@ -401,7 +401,7 @@ export async function sendMessageAsync(chatId: string, text: string, model?: str
 export async function compactChat(
   chatId: string,
   keepLast?: number
-): Promise<{ ok: boolean; removedCount?: number; keptCount?: number; compacted?: boolean; error?: string }> {
+): Promise<{ ok: boolean; removedCount?: number; keptCount?: number; compacted?: boolean; sessionReset?: boolean; error?: string }> {
   const r = await fetch(apiUrl(`/api/chats/${encodeURIComponent(chatId)}/compact`), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },

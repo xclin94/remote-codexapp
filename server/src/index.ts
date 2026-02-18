@@ -99,6 +99,7 @@ const CLI_HISTORY_CACHE_TTL_MS = 1_500;
 const CLI_HISTORY_SCAN_FILE_LIMIT = 200;
 const COMPACT_KEEP_LAST_DEFAULT = 8;
 const COMPACT_SUMMARY_MAX_CHARS = 2_000;
+const COMPACT_BOOTSTRAP_MAX_CHARS = 4_000;
 const cliHistorySnapshotCacheByHome = new Map<string, { expiresAt: number; snapshot: CliHistoryStatusSnapshot | null }>();
 const instanceHealthCache = new Map<string, { expiresAt: number; snapshot: InstanceHealthSnapshot }>();
 const INSTANCE_HEALTH_CACHE_TTL_MS = 20_000;
@@ -142,6 +143,37 @@ function buildCompactedMessages(messages: ChatMessage[], keepLast: number): { me
     messages: [compactSummary, ...keep],
     removedCount: toCompact.length
   };
+}
+
+function isCompactSummaryMessage(message: ChatMessage): boolean {
+  if (message.role !== 'system') return false;
+  if (typeof message.id === 'string' && message.id.startsWith('compact-')) return true;
+  return typeof message.text === 'string' && message.text.startsWith('Conversation compacted.');
+}
+
+function buildCompactBootstrapPrompt(messages: ChatMessage[]): string | null {
+  if (!Array.isArray(messages) || messages.length === 0) return null;
+  const compactIndex = messages.findIndex((message) => isCompactSummaryMessage(message));
+  if (compactIndex < 0) return null;
+  const relevant = messages.slice(compactIndex);
+  if (!relevant.length) return null;
+
+  const text = relevant
+    .map((message) => {
+      const role = message.role === 'user' || message.role === 'assistant' || message.role === 'system'
+        ? message.role
+        : 'system';
+      const raw = typeof message.text === 'string' ? message.text : '';
+      const clipped = raw.length > 500 ? `${raw.slice(0, 497)}...` : raw;
+      return `[${role}] ${clipped}`;
+    })
+    .join('\n');
+
+  if (!text) return null;
+  const compacted = text.length > COMPACT_BOOTSTRAP_MAX_CHARS
+    ? `${text.slice(0, COMPACT_BOOTSTRAP_MAX_CHARS)}...`
+    : text;
+  return `Compacted conversation context:\n${compacted}\n\nContinue from this context and answer the latest user message.`;
 }
 
 function parseCookieHeader(raw: string | undefined): Record<string, string> {
@@ -717,11 +749,12 @@ function getLatestTokenCountFromCodexHistory(codexHomePath?: string): CliHistory
 }
 
 function getCliStatusFallback(
-  fallbackUsage: CliStatusUsageFallback = {}
+  fallbackUsage: CliStatusUsageFallback = {},
+  codexHomePath?: string
 ): CliStatusUsageFallback {
   const localUsage = fallbackUsage.usage || null;
   const localRateLimits = fallbackUsage.rateLimits || null;
-  const history = getLatestTokenCountFromCodexHistory();
+  const history = getLatestTokenCountFromCodexHistory(codexHomePath);
   if (!history) {
     return { usage: localUsage, rateLimits: localRateLimits };
   }
@@ -1203,9 +1236,12 @@ type CliStatusUsageFallback = {
   rateLimits?: Record<string, unknown> | null;
 };
 
-async function getCliStatusUsage(fallbackUsage: CliStatusUsageFallback = {}): Promise<CliStatusUsageResult> {
+async function getCliStatusUsage(
+  fallbackUsage: CliStatusUsageFallback = {},
+  codexHomePath?: string
+): Promise<CliStatusUsageResult> {
   const statusUrl = resolveCliStatusUrl();
-  const fallbackCombined = getCliStatusFallback(fallbackUsage);
+  const fallbackCombined = getCliStatusFallback(fallbackUsage, codexHomePath);
   if (!statusUrl) {
     if (fallbackCombined.usage || fallbackCombined.rateLimits) {
       return { usage: fallbackCombined.usage, rateLimits: fallbackCombined.rateLimits };
@@ -1516,12 +1552,12 @@ app.get('/api/status', async (req, res) => {
   );
   const runningCount = runtimeByChat.filter((x) => x.status === 'running').length;
   const localUsage = localUsageAgg.usage || undefined;
-  const cliStatusUsage = await getCliStatusUsage(localUsageAgg);
   const activeChatId = session.activeChatId || null;
   const activeRuntime = activeChatId ? runtimeByChat.find((item) => item.id === activeChatId) : null;
   const activeChat = activeChatId ? store.getChat(sid, activeChatId) : null;
   const instanceSnapshot = getInstanceConfigSnapshot();
   const activeInstance = activeChat ? resolveInstanceForChat(instanceSnapshot, activeChat) : null;
+  const cliStatusUsage = await getCliStatusUsage(localUsageAgg, activeInstance?.codexHome);
   const accountStatus = getCodexLoginStatusText(activeInstance?.codexHome);
 
   res.json({
@@ -1545,7 +1581,7 @@ app.get('/api/status', async (req, res) => {
       createdAt: session.createdAt,
       expiresAt: session.expiresAt,
       activeChatId,
-      activeInstanceId: activeChat?.instanceId || null,
+      activeInstanceId: activeInstance?.id || activeChat?.instanceId || null,
       codexSessionId: activeRuntime?.codexSessionId || null
     },
     chats: {
@@ -2361,13 +2397,21 @@ app.post('/api/chats/:chatId/instance', async (req, res) => {
 async function startChatTurn(opts: { sid: string; chatId: string; text: string; model?: string }) {
   const chat = store.getChat(opts.sid, opts.chatId);
   if (!chat) throw new Error('not_found');
-  if (await codex.isBusy(opts.sid, opts.chatId)) throw new Error('chat_busy');
+  const [isBusy, sessionStateResult] = await Promise.all([
+    codex.isBusy(opts.sid, opts.chatId),
+    codex.getChatSessionState(opts.sid, opts.chatId).then((v) => ({ ok: true as const, value: v })).catch(() => ({ ok: false as const }))
+  ]);
+  if (isBusy) throw new Error('chat_busy');
+  const hasCodexSession = sessionStateResult.ok ? Boolean(sessionStateResult.value?.sessionId) : true;
 
   const instanceSnapshot = getInstanceConfigSnapshot();
   const instance = resolveInstanceForChat(instanceSnapshot, chat);
   if (chat.instanceId !== instance.id) {
     store.setChatInstanceId(opts.sid, opts.chatId, instance.id);
   }
+
+  const compactBootstrap = !hasCodexSession ? buildCompactBootstrapPrompt(chat.messages) : null;
+  const promptText = compactBootstrap ? `${compactBootstrap}\n\n[User]\n${opts.text}` : opts.text;
 
   store.appendMessage(opts.sid, opts.chatId, { role: 'user', text: opts.text });
   const assistantMsg = store.appendMessage(opts.sid, opts.chatId, { role: 'assistant', text: '' });
@@ -2385,7 +2429,7 @@ async function startChatTurn(opts: { sid: string; chatId: string; text: string; 
       const r = await codex.runTurn({
         sessionId: opts.sid,
         chatId: opts.chatId,
-        prompt: opts.text,
+        prompt: promptText,
         assistantMessageId: assistantMsg.id,
         instance: {
           instanceId: instance.id,
@@ -2547,15 +2591,17 @@ app.post('/api/chats/:chatId/compact', async (req, res) => {
   const { keep_last: keepLast } = parsed.data;
   const compacted = buildCompactedMessages(chat.messages, keepLast ?? COMPACT_KEEP_LAST_DEFAULT);
   if (compacted.messages.length === 0 || compacted.removedCount === 0) {
-    return res.json({ ok: true, compacted: false, removedCount: 0 });
+    return res.json({ ok: true, compacted: false, removedCount: 0, sessionReset: false });
   }
 
   store.replaceMessages(sid, chatId, compacted.messages);
+  await codex.reset(sid, chatId).catch(() => undefined);
   res.json({
     ok: true,
     compacted: true,
     removedCount: compacted.removedCount,
-    keptCount: compacted.messages.length
+    keptCount: compacted.messages.length,
+    sessionReset: true
   });
 });
 

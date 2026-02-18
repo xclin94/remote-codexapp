@@ -384,7 +384,7 @@ export default function App() {
     const chatId = await pickInitialChat(me.sessionId, me.activeChatId);
     switchToChat(chatId, me.sessionId);
   }} />;
-  return <Chat chatId={view.chatId} sessionId={sessionId} onSwitchChat={(chatId) => switchToChat(chatId)} onLogout={async () => {
+  return <Chat key={`${sessionId}:${view.chatId}`} chatId={view.chatId} sessionId={sessionId} onSwitchChat={(chatId) => switchToChat(chatId)} onLogout={async () => {
     await logout();
     const u = new URL(window.location.href);
     u.searchParams.delete('chat');
@@ -1289,13 +1289,24 @@ function Chat(props: { chatId: string; sessionId: string; onSwitchChat: (chatId:
   };
 
   const scrollChatToLatest = (behavior: ScrollBehavior = 'auto') => {
-    if (behavior === 'smooth') {
-      bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
-      return;
-    }
     const el = chatRef.current;
+    const anchor = bottomRef.current;
+    if (!el && !anchor) return;
+
+    if (anchor) {
+      anchor.scrollIntoView({ behavior, block: 'end', inline: 'nearest' });
+    }
+
     if (!el) return;
     el.scrollTop = el.scrollHeight;
+
+    if (behavior === 'auto') {
+      window.requestAnimationFrame(() => {
+        const nextEl = chatRef.current;
+        if (!nextEl) return;
+        nextEl.scrollTop = nextEl.scrollHeight;
+      });
+    }
   };
 
   useLayoutEffect(() => {
@@ -1331,7 +1342,7 @@ function Chat(props: { chatId: string; sessionId: string; onSwitchChat: (chatId:
   }, [fullscreenMode, isMobileLayout]);
 
   useEffect(() => {
-    scrollChatToLatest('smooth');
+    scrollChatToLatest('auto');
   }, [messages.length]);
 
   const applySettings = async (patch: any, local: Partial<typeof settings>, statusText?: string) => {
@@ -1577,7 +1588,9 @@ function Chat(props: { chatId: string; sessionId: string; onSwitchChat: (chatId:
             return true;
           }
           await syncNow();
-          addSystem(`OK: compact complete (removed ${r.removedCount || 0} messages).`);
+          addSystem(
+            `OK: compact complete (removed ${r.removedCount || 0} messages, session reset=${r.sessionReset ? 'yes' : 'no'}).`
+          );
         } catch (e: any) {
           setErr(String(e?.message || e));
         } finally {
@@ -2119,7 +2132,9 @@ function Chat(props: { chatId: string; sessionId: string; onSwitchChat: (chatId:
                     return;
                   }
                   await syncNow();
-                  addSystem(`OK: compact complete (removed ${r.removedCount || 0} messages).`);
+                  addSystem(
+                    `OK: compact complete (removed ${r.removedCount || 0} messages, session reset=${r.sessionReset ? 'yes' : 'no'}).`
+                  );
                 } catch (e: any) {
                   setErr(String(e?.message || e));
                 }
