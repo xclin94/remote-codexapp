@@ -296,6 +296,7 @@ body {
   display: flex;
   flex-direction: column;
   overflow: hidden;
+  position: relative;
 }
 
 .chat-main-terminal {
@@ -721,6 +722,12 @@ body {
   margin-bottom: 8px;
 }
 
+.queue-head-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
 .queue-title {
   color: var(--muted);
   font-size: 12px;
@@ -769,6 +776,37 @@ body {
   color: rgba(255, 255, 255, 0.92);
   background: rgba(255, 95, 109, 0.10);
   border-top: 1px solid rgba(255, 95, 109, 0.22);
+}
+
+.scroll-nav {
+  position: absolute;
+  left: 0;
+  right: 0;
+  display: flex;
+  justify-content: center;
+  pointer-events: none;
+  opacity: 0;
+  transform: translateY(-8px);
+  transition: opacity 140ms ease, transform 180ms ease;
+  z-index: 2;
+}
+
+.scroll-nav.to-top {
+  top: 10px;
+}
+
+.scroll-nav.to-bottom {
+  bottom: 90px;
+  transform: translateY(8px);
+}
+
+.scroll-nav.show {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+.scroll-nav-btn {
+  pointer-events: auto;
 }
 
 .approvalbar {
@@ -1060,6 +1098,23 @@ body {
     gap: 8px 10px;
     max-height: min(58dvh, 480px);
   }
+  .controls .ctl {
+    width: 100%;
+    align-items: stretch;
+    gap: 6px;
+  }
+  .controls .ctl .ctl-label {
+    width: 100%;
+  }
+  .controls .ctl .input,
+  .controls .ctl .btn,
+  .controls .ctl select {
+    width: 100%;
+    min-width: 0;
+  }
+  .controls .ctl-right {
+    width: 100%;
+  }
   .queue-item {
     grid-template-columns: 1fr;
   }
@@ -1075,6 +1130,29 @@ body {
   .topbar .btn {
     padding: 8px 10px;
     font-size: 12px;
+  }
+  .composer {
+    grid-template-columns: 1fr;
+    gap: 8px;
+    padding: 10px;
+    padding-bottom: calc(10px + env(safe-area-inset-bottom, 0px));
+  }
+  .composer-actions {
+    width: 100%;
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 6px;
+  }
+  .composer-actions .btn {
+    width: 100%;
+    min-width: 0;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+    overflow: hidden;
+    padding: 8px 6px;
+  }
+  .scroll-nav.to-bottom {
+    bottom: 84px;
   }
   .cwdpicker-actions {
     gap: 8px;
@@ -1114,21 +1192,12 @@ body {
   }
   .page-chat.fullscreen-mode .composer {
     grid-template-columns: 1fr;
-    gap: 8px;
-    padding: 10px;
-    padding-bottom: calc(10px + env(safe-area-inset-bottom, 0px));
   }
   .page-chat.fullscreen-mode .composer-actions {
     width: 100%;
-    display: grid;
     grid-template-columns: repeat(4, minmax(0, 1fr));
-    gap: 6px;
   }
   .page-chat.fullscreen-mode .composer-actions .btn {
     width: 100%;
-    min-width: 0;
-    white-space: nowrap;
-    text-overflow: ellipsis;
-    overflow: hidden;
   }
 }

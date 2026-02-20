@@ -612,6 +612,9 @@ function Chat(props: { chatId: string; sessionId: string; onSwitchChat: (chatId:
   const [lastDeltaAt, setLastDeltaAt] = useState<number>(0);
   const [activity, setActivity] = useState<ActivityItem[]>([]);
   const [activityOpen, setActivityOpen] = useState<boolean>(true);
+  const [queueOpen, setQueueOpen] = useState<boolean>(false);
+  const [scrollNavVisible, setScrollNavVisible] = useState(false);
+  const [scrollNavDir, setScrollNavDir] = useState<'up' | 'down'>('down');
   const [pollOkAt, setPollOkAt] = useState<number>(0);
   const [pollErrorCount, setPollErrorCount] = useState<number>(0);
   const [pollErrorAt, setPollErrorAt] = useState<number>(0);
@@ -659,6 +662,9 @@ function Chat(props: { chatId: string; sessionId: string; onSwitchChat: (chatId:
   const terminalListRefreshSeqRef = useRef(0);
   const historyLoadRef = useRef<{ prevScrollHeight: number; prevScrollTop: number } | null>(null);
   const historyLoadingRef = useRef(false);
+  const lastScrollTopRef = useRef(0);
+  const scrollNavTimerRef = useRef<number | null>(null);
+  const chatCacheRef = useRef<Map<string, ChatMessage[]>>(new Map());
 
   const pushActivity = (item: Omit<ActivityItem, 'ts'> & { ts?: number }) => {
     const ts = typeof item.ts === 'number' ? item.ts : nowTs();
@@ -703,6 +709,16 @@ function Chat(props: { chatId: string; sessionId: string; onSwitchChat: (chatId:
 
   useEffect(() => {
     if (!isMobileLayout) setMobileChatListOpen(false);
+  }, [isMobileLayout]);
+
+  useEffect(() => {
+    if (isMobileLayout) {
+      setActivityOpen(false);
+      setQueueOpen(false);
+      return;
+    }
+    setActivityOpen(true);
+    setQueueOpen(true);
   }, [isMobileLayout]);
 
   useEffect(() => {
@@ -1186,6 +1202,10 @@ function Chat(props: { chatId: string; sessionId: string; onSwitchChat: (chatId:
   }, [queueState.sid, queueState.chatId, queueState.prompts]);
 
   useEffect(() => {
+    chatCacheRef.current.set(props.chatId, messages);
+  }, [props.chatId, messages]);
+
+  useEffect(() => {
     let cancelled = false;
     (async () => {
       setErr(null);
@@ -1204,13 +1224,22 @@ function Chat(props: { chatId: string; sessionId: string; onSwitchChat: (chatId:
       setLastSseEventName('');
       setLastDeltaAt(0);
       setActivity([]);
-      setActivityOpen(true);
+      setActivityOpen(!isMobileLayout);
+      setQueueOpen(!isMobileLayout);
       setPollOkAt(0);
       setPollErrorCount(0);
       setPollErrorAt(0);
       setStreamErrorCount(0);
       setStreamErrorAt(0);
       startTurnRef.current = false;
+      const cachedMessages = chatCacheRef.current.get(props.chatId);
+      if (cachedMessages && cachedMessages.length > 0) {
+        setMessages(cachedMessages);
+        window.requestAnimationFrame(() => scrollChatToLatest('auto'));
+      } else {
+        setMessages([]);
+      }
+      lastScrollTopRef.current = 0;
       const chat = await getChat(props.chatId, { tail: CHAT_FAST_LOAD_TAIL });
       if (cancelled) return;
       setMessages(chat.messages);
@@ -1268,7 +1297,7 @@ function Chat(props: { chatId: string; sessionId: string; onSwitchChat: (chatId:
       stopPolling();
       closeStream();
     };
-  }, [props.chatId]);
+  }, [props.chatId, isMobileLayout]);
 
   const renderStart = Math.max(0, messages.length - renderCount);
   const visibleMessages = messages.slice(renderStart);
@@ -1277,16 +1306,39 @@ function Chat(props: { chatId: string; sessionId: string; onSwitchChat: (chatId:
   const onChatScroll = () => {
     const el = chatRef.current;
     if (!el) return;
+    const currentTop = el.scrollTop;
+    const direction: 'up' | 'down' = currentTop < lastScrollTopRef.current ? 'up' : 'down';
+    lastScrollTopRef.current = currentTop;
+
+    if (isMobileLayout) {
+      const maxTop = Math.max(0, el.scrollHeight - el.clientHeight);
+      const nearTop = currentTop <= 12;
+      const nearBottom = maxTop - currentTop <= 12;
+      if (!nearTop && !nearBottom) {
+        setScrollNavDir(direction);
+        setScrollNavVisible(true);
+        if (scrollNavTimerRef.current) window.clearTimeout(scrollNavTimerRef.current);
+        scrollNavTimerRef.current = window.setTimeout(() => setScrollNavVisible(false), 1200);
+      } else {
+        setScrollNavVisible(false);
+      }
+    }
 
     // Near-top threshold to trigger history expansion.
-    if (el.scrollTop > 80) return;
+    if (currentTop > 80) return;
     if (renderStart <= 0) return;
     if (historyLoadingRef.current) return;
 
     historyLoadingRef.current = true;
-    historyLoadRef.current = { prevScrollHeight: el.scrollHeight, prevScrollTop: el.scrollTop };
+    historyLoadRef.current = { prevScrollHeight: el.scrollHeight, prevScrollTop: currentTop };
     setRenderCount((c) => Math.min(messages.length, c + LOAD_MORE_COUNT));
   };
+
+  useEffect(() => {
+    return () => {
+      if (scrollNavTimerRef.current) window.clearTimeout(scrollNavTimerRef.current);
+    };
+  }, []);
 
   const scrollChatToLatest = (behavior: ScrollBehavior = 'auto') => {
     const el = chatRef.current;
@@ -1616,16 +1668,6 @@ function Chat(props: { chatId: string; sessionId: string; onSwitchChat: (chatId:
     await sendPrompt(text);
   };
 
-  const jumpToTop = () => {
-    const el = chatRef.current;
-    if (!el) return;
-    el.scrollTop = 0;
-  };
-
-  const jumpToBottom = () => {
-    scrollChatToLatest('auto');
-  };
-
   useEffect(() => {
     if (busy || startTurnRef.current || queuedPrompts.length === 0) return;
     const [next, ...rest] = queuedPrompts;
@@ -1635,7 +1677,7 @@ function Chat(props: { chatId: string; sessionId: string; onSwitchChat: (chatId:
 
   const chatOptionLabel = (chat: ChatListItem) => {
     const shortId = chat.id.slice(0, 6);
-    const instance = (chat.instanceId || '').trim();
+    const instance = (chat.instanceId || instanceDefaultId || 'default').trim();
     const prefix = instance ? `[${instance}] ` : '';
     const title = (chat.title || '').trim();
     if (title) return `${shortId}  ${prefix}${title.slice(0, 40)}`;
@@ -1644,7 +1686,7 @@ function Chat(props: { chatId: string; sessionId: string; onSwitchChat: (chatId:
     return `${shortId}  ${prefix}${new Date(chat.updatedAt).toLocaleTimeString()}`;
   };
   const sessionTabLabel = (chat: ChatListItem) => {
-    const instance = (chat.instanceId || '').trim();
+    const instance = (chat.instanceId || instanceDefaultId || 'default').trim();
     const prefix = instance ? `[${instance}] ` : '';
     const title = (chat.title || '').trim();
     if (title) return `${prefix}${title}`.slice(0, 42);
@@ -1812,6 +1854,7 @@ function Chat(props: { chatId: string; sessionId: string; onSwitchChat: (chatId:
               className="btn btn-secondary btn-sm"
               onClick={() => {
                 setInstancePanelOpen(true);
+                if (isMobileLayout) setMobileChatListOpen(false);
                 void refreshInstances();
               }}
             >
@@ -2238,6 +2281,26 @@ function Chat(props: { chatId: string; sessionId: string; onSwitchChat: (chatId:
           ))}
           <div ref={bottomRef} />
         </div>
+        {isMobileLayout ? (
+          <div className={`scroll-nav ${scrollNavVisible ? 'show' : ''} ${scrollNavDir === 'up' ? 'to-bottom' : 'to-top'}`}>
+            {scrollNavDir === 'up' ? (
+              <button className="btn btn-secondary btn-sm scroll-nav-btn" onClick={() => scrollChatToLatest('smooth')}>
+                Goto Bottom
+              </button>
+            ) : (
+              <button
+                className="btn btn-secondary btn-sm scroll-nav-btn"
+                onClick={() => {
+                  const el = chatRef.current;
+                  if (!el) return;
+                  el.scrollTo({ top: 0, behavior: 'smooth' });
+                }}
+              >
+                Goto Top
+              </button>
+            )}
+          </div>
+        ) : null}
 
         <div className="composer">
           <textarea
@@ -2263,12 +2326,6 @@ function Chat(props: { chatId: string; sessionId: string; onSwitchChat: (chatId:
                 Session
               </button>
             ) : null}
-            <button className="btn btn-secondary" onClick={jumpToTop}>
-              Top
-            </button>
-            <button className="btn btn-secondary" onClick={jumpToBottom}>
-              Bottom
-            </button>
             <button className="btn btn-secondary" onClick={() => setFullscreenMode((v) => !v)}>
               {fullscreenMode ? 'Normal' : 'Full'}
             </button>
@@ -2320,27 +2377,34 @@ function Chat(props: { chatId: string; sessionId: string; onSwitchChat: (chatId:
           <div className="queue-panel">
             <div className="queue-head">
               <div className="queue-title">Queued prompts</div>
-              <button
-                className="btn btn-secondary btn-sm"
-                onClick={() => setQueuedPrompts([])}
-              >
-                Clear queue
-              </button>
+              <div className="queue-head-actions">
+                <button className="btn btn-secondary btn-sm" onClick={() => setQueueOpen((v) => !v)}>
+                  {queueOpen ? 'Hide' : 'Show'}
+                </button>
+                <button
+                  className="btn btn-secondary btn-sm"
+                  onClick={() => setQueuedPrompts([])}
+                >
+                  Clear queue
+                </button>
+              </div>
             </div>
-            <div className="queue-list">
-              {queuedPrompts.map((prompt, idx) => (
-                <div className="queue-item" key={`queue-${idx}-${prompt.length}`}>
-                  <div className="queue-idx">#{idx + 1}</div>
-                  <pre className="queue-text">{normalizeStreamText(prompt)}</pre>
-                  <button
-                    className="btn btn-secondary btn-sm"
-                    onClick={() => setQueuedPrompts((q) => q.filter((_x, i) => i !== idx))}
-                  >
-                    Remove
-                  </button>
-                </div>
-              ))}
-            </div>
+            {queueOpen ? (
+              <div className="queue-list">
+                {queuedPrompts.map((prompt, idx) => (
+                  <div className="queue-item" key={`queue-${idx}-${prompt.length}`}>
+                    <div className="queue-idx">#{idx + 1}</div>
+                    <pre className="queue-text">{normalizeStreamText(prompt)}</pre>
+                    <button
+                      className="btn btn-secondary btn-sm"
+                      onClick={() => setQueuedPrompts((q) => q.filter((_x, i) => i !== idx))}
+                    >
+                      Remove
+                    </button>
+                  </div>
+                ))}
+              </div>
+            ) : null}
           </div>
         ) : null}
         {err ? <div className="error">{err}</div> : null}
