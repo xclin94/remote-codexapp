@@ -650,6 +650,7 @@ function Chat(props: { chatId: string; sessionId: string; onSwitchChat: (chatId:
   const [instanceError, setInstanceError] = useState<string>('');
   const [sessionInstanceTarget, setSessionInstanceTarget] = useState<string>('auto');
   const [instanceSwitching, setInstanceSwitching] = useState(false);
+  const [turnStarting, setTurnStarting] = useState(false);
 
   const chatRef = useRef<HTMLDivElement | null>(null);
   const bottomRef = useRef<HTMLDivElement | null>(null);
@@ -843,7 +844,7 @@ function Chat(props: { chatId: string; sessionId: string; onSwitchChat: (chatId:
 
   const switchCurrentChatInstance = async (nextInstanceId: string) => {
     const target = (nextInstanceId || '').trim() || 'auto';
-    if (busy || startTurnRef.current) {
+    if (busy || turnStarting) {
       setErr('Cannot switch instance while a turn is running.');
       return;
     }
@@ -1233,6 +1234,7 @@ function Chat(props: { chatId: string; sessionId: string; onSwitchChat: (chatId:
       setStreamErrorCount(0);
       setStreamErrorAt(0);
       startTurnRef.current = false;
+      setTurnStarting(false);
       const cachedMessages = chatCacheRef.current.get(props.chatId);
       if (cachedMessages && cachedMessages.length > 0) {
         setMessages(cachedMessages);
@@ -1487,6 +1489,7 @@ function Chat(props: { chatId: string; sessionId: string; onSwitchChat: (chatId:
   const startTurn = async (promptText: string, opts?: { fromQueue?: boolean; restoreText?: string }) => {
     if (startTurnRef.current) return;
     startTurnRef.current = true;
+    setTurnStarting(true);
 
     setErr(null);
     setBusy(true);
@@ -1533,8 +1536,11 @@ function Chat(props: { chatId: string; sessionId: string; onSwitchChat: (chatId:
       }, 1500);
     } finally {
       startTurnRef.current = false;
+      setTurnStarting(false);
     }
   };
+
+  const turnBusy = busy || turnStarting;
 
   const sendPrompt = async (inputValue: string): Promise<boolean> => {
     const trimmed = inputValue.trim();
@@ -1558,7 +1564,7 @@ function Chat(props: { chatId: string; sessionId: string; onSwitchChat: (chatId:
             setText('');
             return true;
           }
-          addSystem(formatStatusSummary(r.status, props.chatId, runtimeStatus || (busy ? 'running' : 'idle')));
+          addSystem(formatStatusSummary(r.status, props.chatId, runtimeStatus || (turnBusy ? 'running' : 'idle')));
         } catch (e: any) {
           addSystem(`Status failed: ${String(e?.message || e)}`);
         }
@@ -1574,7 +1580,7 @@ function Chat(props: { chatId: string; sessionId: string; onSwitchChat: (chatId:
           setText('');
           return true;
         }
-        if (busy || startTurnRef.current) {
+        if (turnBusy) {
           addSystem('Cannot change model while a turn is running.');
           setText('');
           return true;
@@ -1621,7 +1627,7 @@ function Chat(props: { chatId: string; sessionId: string; onSwitchChat: (chatId:
         return true;
       }
       if (cmd === 'compact') {
-        if (busy || startTurnRef.current) {
+        if (turnBusy) {
           addSystem('Cannot compact while a turn is running.');
           setText('');
           return true;
@@ -1656,7 +1662,7 @@ function Chat(props: { chatId: string; sessionId: string; onSwitchChat: (chatId:
     const promptText = rawPromptText;
     setText('');
 
-    if (busy || startTurnRef.current) {
+    if (turnBusy) {
       setQueuedPrompts((q) => [...q, promptText]);
       return true;
     }
@@ -1689,7 +1695,7 @@ function Chat(props: { chatId: string; sessionId: string; onSwitchChat: (chatId:
   const cancelAll = async () => {
     const hadQueue = queuedPrompts.length > 0;
     if (hadQueue) setQueuedPrompts([]);
-    if (!busy && !startTurnRef.current) {
+    if (!turnBusy) {
       if (hadQueue) addSystem('OK: queue cleared');
       return;
     }
@@ -1703,11 +1709,11 @@ function Chat(props: { chatId: string; sessionId: string; onSwitchChat: (chatId:
   };
 
   useEffect(() => {
-    if (busy || startTurnRef.current || queuedPrompts.length === 0) return;
+    if (turnBusy || queuedPrompts.length === 0) return;
     const [next, ...rest] = queuedPrompts;
     setQueuedPrompts(rest);
     void startTurn(next, { fromQueue: true });
-  }, [busy, queuedPrompts]);
+  }, [turnBusy, queuedPrompts]);
 
   const chatOptionLabel = (chat: ChatListItem) => {
     const shortId = chat.id.slice(0, 6);
@@ -1867,7 +1873,7 @@ function Chat(props: { chatId: string; sessionId: string; onSwitchChat: (chatId:
                 .filter((item) => item.enabled)
                 .map((item) => (
                   <option key={item.id} value={item.id}>
-                    {item.label} ({item.id}{item.isDefault ? ', default' : ''}{item.ready ? '' : ', not ready'})
+                    {item.label} ({item.id}, {item.backend || 'codex'}{item.model ? `, model=${item.model}` : ''}{item.isDefault ? ', default' : ''}{item.ready ? '' : ', not ready'})
                   </option>
                 ))}
             </select>
@@ -1922,7 +1928,7 @@ function Chat(props: { chatId: string; sessionId: string; onSwitchChat: (chatId:
               </span>
               {isTerminalView ? (
                 <span className="badge badge-tight">{activeTerminal?.status || 'running'}</span>
-              ) : busy ? (
+              ) : turnBusy ? (
                 <span className="badge badge-tight badge-running">Running</span>
               ) : (
                 <span className="badge badge-tight">Idle</span>
@@ -1947,7 +1953,7 @@ function Chat(props: { chatId: string; sessionId: string; onSwitchChat: (chatId:
             {!isTerminalView ? (
               <button
                 className="btn btn-secondary btn-sm"
-                disabled={!busy}
+                disabled={!turnBusy}
                 onClick={async () => {
                   try {
                     await abortChat(props.chatId);
@@ -2101,7 +2107,7 @@ function Chat(props: { chatId: string; sessionId: string; onSwitchChat: (chatId:
 
           <div className="ctl">
             <div className="ctl-label">Diagnostics</div>
-            <div className="badge badge-tight">{`rt=${runtimeStatus || (busy ? 'running' : 'idle')}`}</div>
+            <div className="badge badge-tight">{`rt=${runtimeStatus || (turnBusy ? 'running' : 'idle')}`}</div>
             <div className="badge badge-tight">{`rt_eid=${runtimeLastEventId || 0}`}</div>
             <div className="badge badge-tight">{`stream=${streamStatus}`}</div>
             <div className="badge badge-tight">{`es=${esRef.current ? esRef.current.readyState : 'n/a'}`}</div>
@@ -2223,7 +2229,7 @@ function Chat(props: { chatId: string; sessionId: string; onSwitchChat: (chatId:
             </button>
             <button
               className="btn btn-secondary btn-sm"
-              disabled={!busy}
+              disabled={!turnBusy}
               onClick={async () => {
                 try {
                   await abortChat(props.chatId);
@@ -2381,14 +2387,14 @@ function Chat(props: { chatId: string; sessionId: string; onSwitchChat: (chatId:
                 Newline
               </button>
             ) : null}
-            <button className="btn btn-secondary" disabled={!busy && queuedPrompts.length === 0} onClick={() => void cancelAll()}>
+            <button className="btn btn-secondary" disabled={!turnBusy && queuedPrompts.length === 0} onClick={() => void cancelAll()}>
               Cancel All
             </button>
             <button className="btn" onClick={() => setText(AGENT_PROMPT_TEMPLATE)}>
               prompt
             </button>
             <button className="btn" disabled={text.trim().length === 0} onClick={() => void send()}>
-              {busy ? 'Queue' : 'Send'}
+              {turnBusy ? 'Queue' : 'Send'}
             </button>
           </div>
         </div>
@@ -2396,7 +2402,7 @@ function Chat(props: { chatId: string; sessionId: string; onSwitchChat: (chatId:
           Enter to send, Shift+Enter for newline.
           {queuedPrompts.length > 0 ? <span className="muted"> (queued={queuedPrompts.length})</span> : null}
           {uiStatus ? <span className="muted"> ({uiStatus})</span> : null}
-          {busy ? (
+          {turnBusy ? (
             <span className="muted">
               {' '}
               (running, rt={runtimeStatus || 'running'}, eid={runtimeLastEventId || 0}, stream={streamStatus}, last update{' '}
@@ -2567,12 +2573,13 @@ function Chat(props: { chatId: string; sessionId: string; onSwitchChat: (chatId:
                 <div className="instance-row">
                   <strong>{item.label}</strong>
                   <span className="badge badge-tight">{item.id}</span>
+                  <span className="badge badge-tight">{item.backend || 'codex'}</span>
                   {item.isDefault ? <span className="badge badge-tight">default</span> : null}
                   {!item.enabled ? <span className="badge badge-tight">disabled</span> : null}
                   {!item.ready ? <span className="badge badge-tight">not ready</span> : null}
                 </div>
                 <div className="instance-row muted">
-                  login: {item.loginStatus || 'unknown'} | chats: {item.running}/{item.chats}
+                  login: {item.loginStatus || 'unknown'} | chats: {item.running}/{item.chats} | model: {item.model || 'default'}
                 </div>
                 <div className="instance-row muted">
                   home: <code>{item.codexHome}</code>

@@ -1,22 +1,33 @@
 {
-  "defaultInstanceId": "acc1",
+  "defaultInstanceId": "codex1",
   "instances": [
     {
-      "id": "acc1",
-      "label": "Primary Account",
+      "id": "codex1",
+      "label": "Codex Account 1",
       "codexHome": "/root/.codex",
+      "backend": "codex",
       "enabled": true
     },
     {
-      "id": "acc2",
-      "label": "Second Account",
+      "id": "codex2",
+      "label": "Codex Account 2",
       "codexHome": "/root/.codex-a2",
+      "backend": "codex",
       "enabled": true
     },
     {
-      "id": "acc3",
-      "label": "Third Account",
+      "id": "codex3",
+      "label": "Codex Account 3",
       "codexHome": "/root/.codex-a3",
+      "backend": "codex",
+      "enabled": true
+    },
+    {
+      "id": "claude",
+      "label": "Claude Code",
+      "codexHome": "/root/.codex",
+      "backend": "claude",
+      "model": "gemini-3.1-pro-high",
       "enabled": true
     }
   ]

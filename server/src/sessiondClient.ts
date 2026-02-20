@@ -224,6 +224,7 @@ export class SessiondClient {
     instance?: {
       instanceId: string;
       codexHome?: string;
+      backend?: 'codex' | 'claude';
     };
     config: {
       cwd?: string;

@@ -17,6 +17,7 @@ type RunnerState = {
   sessionConfigKey?: string;
   instanceId: string;
   codexHome?: string;
+  backend: 'codex' | 'claude';
 };
 
 function sessionConfigKey(config: {
@@ -38,6 +39,7 @@ function sessionConfigKey(config: {
 type CodexInstanceBinding = {
   instanceId: string;
   codexHome?: string;
+  backend?: 'codex' | 'claude';
 };
 
 // One runner per (sessionId, chatId). This keeps Codex session continuity for that chat.
@@ -53,8 +55,9 @@ export class CodexManager {
     let r = this.runners.get(k);
     const nextInstanceId = binding?.instanceId || 'default';
     const nextCodexHome = binding?.codexHome?.trim() || undefined;
+    const nextBackend: 'codex' | 'claude' = binding?.backend === 'claude' ? 'claude' : 'codex';
 
-    if (r && (r.instanceId !== nextInstanceId || r.codexHome !== nextCodexHome)) {
+    if (r && (r.instanceId !== nextInstanceId || r.codexHome !== nextCodexHome || r.backend !== nextBackend)) {
       if (r.busy) throw new Error('chat_busy');
       this.runners.delete(k);
       r = undefined;
@@ -63,11 +66,13 @@ export class CodexManager {
     if (!r) {
       const env: Record<string, string> = {};
       if (nextCodexHome) env.CODEX_HOME = nextCodexHome;
+      env.CODEX_BACKEND = nextBackend;
       r = {
         client: new CodexMcpClient({ env }),
         busy: false,
         instanceId: nextInstanceId,
-        codexHome: nextCodexHome
+        codexHome: nextCodexHome,
+        backend: nextBackend
       };
       this.runners.set(k, r);
     }
@@ -127,13 +132,13 @@ export class CodexManager {
     r.abort = new AbortController();
     const nextConfigKey = sessionConfigKey(opts.config);
     const turnStartAt = Date.now();
+    let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
 
     try {
       // Wrap event handler so we can emit low-noise heartbeats when Codex is "thinking"
       // and not producing any deltas/events for a while.
       let lastNonProgressAt = Date.now();
       let lastHeartbeatAt = 0;
-      let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
       const emit = (e: CodexRunnerEvent) => {
         if (!(e.type === 'raw' && isProgressMsg(e.msg))) {
           lastNonProgressAt = Date.now();

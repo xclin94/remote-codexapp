@@ -25,6 +25,12 @@ const EnvSchema = z.object({
     z.enum(['low', 'medium', 'high', 'xhigh']).default('xhigh')
   ),
   CODEX_CWD: z.string().default(process.cwd()),
+  // Backend runtime:
+  // - codex: use `codex mcp-server` (default)
+  // - claude: use `claude -p --output-format stream-json`
+  CODEX_BACKEND: z.preprocess(emptyToUndefined, z.enum(['codex', 'claude']).default('codex')),
+  // Optional fallback model when backend=claude and model is not explicitly set per chat/instance.
+  CLAUDE_MODEL: z.preprocess(emptyToUndefined, z.string().optional()),
   // Chat working directory strategy:
   // - isolated: each chat gets its own folder (recommended for concurrency)
   // - shared: chats default to CODEX_CWD unless user overrides

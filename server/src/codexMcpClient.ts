@@ -1,3 +1,5 @@
+import { spawn, type ChildProcess } from 'node:child_process';
+import readline from 'node:readline';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { ElicitRequestSchema } from '@modelcontextprotocol/sdk/types.js';
@@ -33,11 +35,22 @@ function isObj(v: unknown): v is Record<string, any> {
   return typeof v === 'object' && v !== null;
 }
 
+type AgentBackend = 'codex' | 'claude';
+type ClaudeEffort = 'low' | 'medium' | 'high';
+
+function resolveBackend(raw: unknown): AgentBackend {
+  if (typeof raw !== 'string') return 'codex';
+  const v = raw.trim().toLowerCase();
+  return v === 'claude' ? 'claude' : 'codex';
+}
+
 export class CodexMcpClient {
-  private client: Client;
+  private client: Client | null = null;
   private transport: StdioClientTransport | null = null;
   private connected = false;
+  private readonly backend: AgentBackend;
   private readonly envOverrides: Record<string, string>;
+  private activeClaudeProc: ChildProcess | null = null;
 
   private sessionId: string | null = null;
   private conversationId: string | null = null;
@@ -51,6 +64,9 @@ export class CodexMcpClient {
 
   constructor(opts?: { env?: Record<string, string> }) {
     this.envOverrides = opts?.env ? { ...opts.env } : {};
+    this.backend = resolveBackend(this.envOverrides.CODEX_BACKEND ?? process.env.CODEX_BACKEND);
+    if (this.backend !== 'codex') return;
+
     this.client = new Client(
       { name: 'codex-remoteapp', version: '1.0.0' },
       { capabilities: { elicitation: {} } }
@@ -137,15 +153,14 @@ export class CodexMcpClient {
 
   async connect(): Promise<void> {
     if (this.connected) return;
-
-    const mergedEnv = Object.keys(process.env).reduce((acc, k) => {
-      const v = process.env[k];
-      if (typeof v === 'string') acc[k] = v;
-      return acc;
-    }, {} as Record<string, string>);
-    for (const [k, v] of Object.entries(this.envOverrides)) {
-      mergedEnv[k] = v;
+    if (this.backend === 'claude') {
+      this.connected = true;
+      return;
     }
+    const client = this.client;
+    if (!client) throw new Error('codex_client_unavailable');
+
+    const mergedEnv = this.buildMergedEnv();
 
     this.transport = new StdioClientTransport({
       command: 'codex',
@@ -154,7 +169,7 @@ export class CodexMcpClient {
     });
 
     // Permission requests come via MCP elicitation.
-    this.client.setRequestHandler(ElicitRequestSchema, async (request) => {
+    client.setRequestHandler(ElicitRequestSchema, async (request) => {
       const p: any = request.params;
       const approvalId = String(p?.codex_call_id || p?.codex_mcp_tool_call_id || p?.codex_event_id || '');
       const id = approvalId || this.nextApprovalId();
@@ -175,7 +190,7 @@ export class CodexMcpClient {
     return this.toElicitResponse(decision);
   });
 
-    await this.client.connect(this.transport);
+    await client.connect(this.transport);
     this.connected = true;
   }
 
@@ -200,6 +215,7 @@ export class CodexMcpClient {
     for (const resolve of resolvers) {
       resolve('abort');
     }
+    this.stopActiveClaudeProcess();
     return resolvers.length;
   }
 
@@ -252,7 +268,28 @@ export class CodexMcpClient {
     this.lastUsage = null;
     this.lastRateLimits = null;
     this.sawAssistantTextInFlight = false;
-    const resp = await this.client.callTool(
+    if (this.backend === 'claude') {
+      await this.runClaudeTurn(
+        {
+          prompt: config.prompt,
+          cwd: config.cwd,
+          model: config.model,
+          effort: this.resolveClaudeEffort(config.config),
+          signal: opts?.signal
+        }
+      );
+      return {
+        ok: true,
+        meta: {
+          sessionId: this.sessionId,
+          conversationId: this.conversationId || this.sessionId
+        }
+      } as any;
+    }
+    const client = this.client;
+    if (!client) throw new Error('codex_client_unavailable');
+
+    const resp = await client.callTool(
       { name: 'codex', arguments: config as any },
       undefined,
       { signal: opts?.signal, timeout: 7 * 24 * 60 * 60 * 1000 }
@@ -273,7 +310,25 @@ export class CodexMcpClient {
     this.lastUsage = null;
     this.lastRateLimits = null;
     this.sawAssistantTextInFlight = false;
-    const resp = await this.client.callTool(
+    if (this.backend === 'claude') {
+      await this.runClaudeTurn({
+        prompt,
+        model: undefined,
+        resumeSessionId: this.sessionId,
+        signal: opts?.signal
+      });
+      return {
+        ok: true,
+        meta: {
+          sessionId: this.sessionId,
+          conversationId: this.conversationId || this.sessionId
+        }
+      } as any;
+    }
+    const client = this.client;
+    if (!client) throw new Error('codex_client_unavailable');
+
+    const resp = await client.callTool(
       { name: 'codex-reply', arguments: { sessionId: this.sessionId, conversationId: this.conversationId, prompt } as any },
       undefined,
       { signal: opts?.signal, timeout: 7 * 24 * 60 * 60 * 1000 }
@@ -284,6 +339,167 @@ export class CodexMcpClient {
     const rateLimitsFromResp = this.extractRateLimits(resp);
     if (rateLimitsFromResp) this.lastRateLimits = rateLimitsFromResp;
     return resp as any;
+  }
+
+  private buildMergedEnv(): Record<string, string> {
+    const mergedEnv = Object.keys(process.env).reduce((acc, k) => {
+      const v = process.env[k];
+      if (typeof v === 'string') acc[k] = v;
+      return acc;
+    }, {} as Record<string, string>);
+    for (const [k, v] of Object.entries(this.envOverrides)) {
+      mergedEnv[k] = v;
+    }
+    return mergedEnv;
+  }
+
+  private resolveClaudeEffort(config: Record<string, any> | undefined): ClaudeEffort | null {
+    const raw = typeof config?.model_reasoning_effort === 'string'
+      ? config.model_reasoning_effort.trim().toLowerCase()
+      : '';
+    if (!raw) return null;
+    if (raw === 'low' || raw === 'medium' || raw === 'high') return raw;
+    if (raw === 'xhigh') return 'high';
+    return null;
+  }
+
+  private stopActiveClaudeProcess(target?: ChildProcess): void {
+    const proc = target || this.activeClaudeProc;
+    if (!proc) return;
+    if (proc.exitCode === null && !proc.killed) {
+      try {
+        proc.kill('SIGTERM');
+      } catch {
+        // ignore
+      }
+      const killer = setTimeout(() => {
+        if (proc.exitCode === null && !proc.killed) {
+          try {
+            proc.kill('SIGKILL');
+          } catch {
+            // ignore
+          }
+        }
+      }, 1200);
+      killer.unref();
+    }
+    if (this.activeClaudeProc === proc) this.activeClaudeProc = null;
+  }
+
+  private extractClaudeAssistantText(payload: any): string {
+    const msg = payload?.message;
+    if (!isObj(msg)) return '';
+    const content = (msg as any).content;
+    if (!Array.isArray(content)) return '';
+    const chunks: string[] = [];
+    for (const item of content) {
+      if (isObj(item) && item.type === 'text' && typeof item.text === 'string' && item.text.length) {
+        chunks.push(item.text);
+      }
+    }
+    return chunks.join('');
+  }
+
+  private handleClaudeJsonLine(payload: any): void {
+    this.updateIdentifiersFromEvent(payload);
+    if (!this.conversationId && this.sessionId) this.conversationId = this.sessionId;
+
+    const usage = this.extractUsage(payload);
+    if (usage) this.lastUsage = usage;
+
+    if (isObj(payload) && payload.type === 'stream_event' && isObj(payload.event)) {
+      const ev = payload.event;
+      const delta = isObj(ev.delta) ? ev.delta : null;
+      if (ev.type === 'content_block_delta' && delta?.type === 'text_delta' && typeof delta.text === 'string') {
+        this.onEvent?.({ type: 'agent_message', message: delta.text });
+        this.sawAssistantTextInFlight = true;
+      }
+    }
+
+    if (isObj(payload) && payload.type === 'assistant' && !this.sawAssistantTextInFlight) {
+      const text = this.extractClaudeAssistantText(payload);
+      if (text) {
+        this.onEvent?.({ type: 'agent_message', message: text });
+        this.sawAssistantTextInFlight = true;
+      }
+    }
+
+    this.onEvent?.({ type: 'raw', msg: { type: 'claude_event', data: payload } });
+  }
+
+  private async runClaudeTurn(opts: {
+    prompt: string;
+    cwd?: string;
+    model?: string;
+    effort?: ClaudeEffort | null;
+    resumeSessionId?: string;
+    signal?: AbortSignal;
+  }): Promise<void> {
+    const args = ['-p', '--verbose', '--output-format', 'stream-json', '--include-partial-messages'];
+    if (opts.resumeSessionId) args.push('--resume', opts.resumeSessionId);
+    if (typeof opts.model === 'string' && opts.model.trim()) args.push('--model', opts.model.trim());
+    if (opts.effort) args.push('--effort', opts.effort);
+    args.push(opts.prompt);
+
+    const child = spawn('claude', args, {
+      cwd: typeof opts.cwd === 'string' && opts.cwd.trim() ? opts.cwd.trim() : undefined,
+      env: this.buildMergedEnv(),
+      stdio: ['ignore', 'pipe', 'pipe']
+    });
+    this.activeClaudeProc = child;
+
+    const stdoutRl = readline.createInterface({ input: child.stdout });
+    const stderrRl = readline.createInterface({ input: child.stderr });
+    const stderrTail: string[] = [];
+    const keepStderr = (line: string) => {
+      const t = line.trim();
+      if (!t) return;
+      stderrTail.push(t);
+      if (stderrTail.length > 8) stderrTail.shift();
+    };
+    stderrRl.on('line', keepStderr);
+
+    const onStdoutLine = (line: string) => {
+      const raw = line.trim();
+      if (!raw) return;
+      try {
+        this.handleClaudeJsonLine(JSON.parse(raw));
+      } catch {
+        this.onEvent?.({ type: 'raw', msg: { type: 'claude_stdout', line: raw } });
+      }
+    };
+    stdoutRl.on('line', onStdoutLine);
+
+    const abortHandler = () => {
+      this.stopActiveClaudeProcess(child);
+    };
+    if (opts.signal) {
+      if (opts.signal.aborted) abortHandler();
+      else opts.signal.addEventListener('abort', abortHandler, { once: true });
+    }
+
+    try {
+      await new Promise<void>((resolve, reject) => {
+        child.once('error', (err) => reject(err));
+        child.once('close', (code) => {
+          if (opts.signal?.aborted) {
+            reject(new Error('aborted'));
+            return;
+          }
+          if (code === 0) {
+            resolve();
+            return;
+          }
+          const tail = stderrTail.join(' | ');
+          reject(new Error(tail || `claude_exit_${code}`));
+        });
+      });
+    } finally {
+      stdoutRl.close();
+      stderrRl.close();
+      if (opts.signal) opts.signal.removeEventListener('abort', abortHandler);
+      if (this.activeClaudeProc === child) this.activeClaudeProc = null;
+    }
   }
 
   private updateIdentifiersFromEvent(event: any) {

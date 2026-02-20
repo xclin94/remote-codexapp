@@ -23,6 +23,7 @@ export type ModelOption = {
 };
 
 export type Defaults = {
+  backend?: 'codex' | 'claude';
   model: string | null;
   reasoningEffort: ReasoningEffort | null;
   cwd: string;
@@ -89,6 +90,8 @@ export type InstanceStatusItem = {
   id: string;
   label: string;
   enabled: boolean;
+  backend?: 'codex' | 'claude';
+  model?: string | null;
   codexHome: string;
   isDefault: boolean;
   ready: boolean;

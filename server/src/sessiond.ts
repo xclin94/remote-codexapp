@@ -117,7 +117,8 @@ const StartSchema = z.object({
   assistantMessageId: z.string().min(1).optional(),
   instance: z.object({
     instanceId: z.string().min(1),
-    codexHome: z.string().min(1).optional()
+    codexHome: z.string().min(1).optional(),
+    backend: z.enum(['codex', 'claude']).optional()
   }).optional(),
   config: z.object({
     cwd: z.string().optional(),
@@ -186,7 +187,8 @@ app.post('/v1/chats/start', (req, res) => {
         instance: instance
           ? {
             instanceId: instance.instanceId,
-            codexHome: instance.codexHome
+            codexHome: instance.codexHome,
+            backend: instance.backend
           }
           : undefined,
         config: {

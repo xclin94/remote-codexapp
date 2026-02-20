@@ -60,6 +60,8 @@ type CodexInstanceConfig = {
   id: string;
   label: string;
   codexHome: string;
+  backend: 'codex' | 'claude';
+  model?: string;
   enabled: boolean;
 };
 
@@ -371,6 +373,7 @@ function defaultInstanceConfig(): CodexInstanceConfig {
     id: 'default',
     label: 'Default',
     codexHome: resolveCodexHomePath(),
+    backend: normalizeBackend(env.CODEX_BACKEND),
     enabled: true
   };
 }
@@ -381,6 +384,11 @@ function normalizeInstanceId(raw: unknown): string {
   if (!trimmed) return '';
   const safe = trimmed.replace(/[^a-zA-Z0-9._-]/g, '_');
   return safe.slice(0, 64);
+}
+
+function normalizeBackend(raw: unknown): 'codex' | 'claude' {
+  if (typeof raw !== 'string') return 'codex';
+  return raw.trim().toLowerCase() === 'claude' ? 'claude' : 'codex';
 }
 
 function parseLocalInstanceConfig(filePath: string): InstanceConfigSnapshot {
@@ -425,8 +433,10 @@ function parseLocalInstanceConfig(filePath: string): InstanceConfigSnapshot {
       ? path.resolve(expandedHome)
       : path.resolve(baseDir, expandedHome);
     const enabled = item.enabled !== false;
+    const backend = normalizeBackend(item.backend);
+    const model = typeof item.model === 'string' && item.model.trim() ? item.model.trim() : undefined;
     const label = typeof item.label === 'string' && item.label.trim() ? item.label.trim() : id;
-    byId.set(id, { id, label, codexHome, enabled });
+    byId.set(id, { id, label, codexHome, backend, model, enabled });
   }
 
   if (byId.size === 0) {
@@ -462,7 +472,16 @@ function getInstanceConfigSnapshot(): InstanceConfigSnapshot {
 function findInstanceById(snapshot: InstanceConfigSnapshot, id: string): CodexInstanceConfig | null {
   const normalizedId = normalizeInstanceId(id);
   if (!normalizedId) return null;
-  return snapshot.instances.find((item) => item.id === normalizedId) || null;
+  const direct = snapshot.instances.find((item) => item.id === normalizedId);
+  if (direct) return direct;
+
+  // Backward-compat: old ids `acc1/acc2/...` are mapped to `codex1/codex2/...`.
+  const legacy = normalizedId.match(/^acc(\d+)$/i);
+  if (legacy) {
+    const mapped = `codex${legacy[1]}`;
+    return snapshot.instances.find((item) => item.id === mapped) || null;
+  }
+  return null;
 }
 
 function resolveInstanceForChat(snapshot: InstanceConfigSnapshot, chat: { instanceId?: string }): CodexInstanceConfig {
@@ -512,18 +531,33 @@ function getInstanceHealth(instance: CodexInstanceConfig): InstanceHealthSnapsho
   let loginStatus: string | null = null;
   let ready = false;
   try {
-    const run = spawnSync('codex', ['login', 'status'], {
-      encoding: 'utf8',
-      timeout: 1400,
-      env: {
-        ...process.env,
-        CODEX_HOME: instance.codexHome
-      }
-    });
-    const merged = `${run.stdout || ''}${run.stderr || ''}`.trim();
-    const first = merged.split(/\r?\n/).map((line) => line.trim()).find(Boolean) || null;
-    loginStatus = first;
-    ready = run.status === 0 && !/not\s+logged\s+in|logged\s+out/i.test(merged);
+    if (instance.backend === 'claude') {
+      const run = spawnSync('claude', ['--version'], {
+        encoding: 'utf8',
+        timeout: 1400,
+        env: {
+          ...process.env,
+          CODEX_HOME: instance.codexHome
+        }
+      });
+      const merged = `${run.stdout || ''}${run.stderr || ''}`.trim();
+      const first = merged.split(/\r?\n/).map((line) => line.trim()).find(Boolean) || null;
+      loginStatus = first;
+      ready = run.status === 0;
+    } else {
+      const run = spawnSync('codex', ['login', 'status'], {
+        encoding: 'utf8',
+        timeout: 1400,
+        env: {
+          ...process.env,
+          CODEX_HOME: instance.codexHome
+        }
+      });
+      const merged = `${run.stdout || ''}${run.stderr || ''}`.trim();
+      const first = merged.split(/\r?\n/).map((line) => line.trim()).find(Boolean) || null;
+      loginStatus = first;
+      ready = run.status === 0 && !/not\s+logged\s+in|logged\s+out/i.test(merged);
+    }
   } catch {
     ready = false;
     loginStatus = null;
@@ -608,6 +642,42 @@ function resolveCreateChatInstance(
   );
   const picked = ties[(autoInstanceRoundRobinCursor++) % ties.length];
   return { ok: true, mode: 'auto', instance: picked.instance };
+}
+
+function modelLooksCodexFamily(model: string): boolean {
+  const m = model.trim().toLowerCase();
+  if (!m) return false;
+  return (
+    m.startsWith('gpt-') ||
+    m.startsWith('o1') ||
+    m.startsWith('o3') ||
+    m.startsWith('o4') ||
+    m.includes('codex')
+  );
+}
+
+function modelLooksClaudeFamily(model: string): boolean {
+  const m = model.trim().toLowerCase();
+  if (!m) return false;
+  return m.startsWith('claude') || m.includes('sonnet') || m.includes('haiku') || m.includes('opus');
+}
+
+function resolveModelForInstance(instance: CodexInstanceConfig, preferred: string | undefined): string | undefined {
+  const explicit = typeof preferred === 'string' && preferred.trim() ? preferred.trim() : undefined;
+  const instanceDefault = typeof instance.model === 'string' && instance.model.trim() ? instance.model.trim() : undefined;
+  const backendDefault = instance.backend === 'claude'
+    ? (env.CLAUDE_MODEL?.trim() || undefined)
+    : (env.CODEX_MODEL?.trim() || undefined);
+  const picked = explicit || instanceDefault || backendDefault;
+  if (!picked) return undefined;
+
+  if (instance.backend === 'claude' && modelLooksCodexFamily(picked)) {
+    return instanceDefault || (env.CLAUDE_MODEL?.trim() || undefined);
+  }
+  if (instance.backend === 'codex' && modelLooksClaudeFamily(picked)) {
+    return instanceDefault || (env.CODEX_MODEL?.trim() || undefined);
+  }
+  return picked;
 }
 
 function parseTimestampToMs(raw: unknown): number | null {
@@ -1570,6 +1640,7 @@ app.get('/api/status', async (req, res) => {
     accountStatus: accountStatus || undefined,
     collaborationMode: 'Default',
     defaults: {
+      backend: env.CODEX_BACKEND,
       model: env.CODEX_MODEL || null,
       reasoningEffort: env.CODEX_REASONING_EFFORT || null,
       cwd: env.CODEX_CWD,
@@ -1658,7 +1729,7 @@ app.get('/api/instances', (req, res) => {
   const statsByInstance = new Map<string, { chats: number; running: number }>();
   for (const session of store.getAllSessions()) {
     for (const chat of store.listChats(session.id)) {
-      const key = chat.instanceId || snapshot.defaultInstanceId;
+      const key = resolveInstanceForChat(snapshot, chat).id;
       const prev = statsByInstance.get(key) || { chats: 0, running: 0 };
       prev.chats += 1;
       if (store.getStreamRuntime(session.id, chat.id).status === 'running') prev.running += 1;
@@ -1674,6 +1745,8 @@ app.get('/api/instances', (req, res) => {
       id: instance.id,
       label: instance.label,
       enabled: instance.enabled,
+      backend: instance.backend,
+      model: instance.model || null,
       codexHome: instance.codexHome,
       isDefault: snapshot.defaultInstanceId === instance.id,
       ready: health.ready,
@@ -1704,6 +1777,7 @@ app.get('/api/defaults', (req, res) => {
   res.json({
     ok: true,
     defaults: {
+      backend: env.CODEX_BACKEND,
       model: env.CODEX_MODEL || null,
       reasoningEffort: env.CODEX_REASONING_EFFORT || null,
       cwd: env.CODEX_CWD,
@@ -2422,6 +2496,7 @@ async function startChatTurn(opts: { sid: string; chatId: string; text: string; 
 
   const settings = chat.settings || {};
   const chatCwd = ensureChatWorkingDirectory(opts.sid, chat);
+  const resolvedModel = resolveModelForInstance(instance, opts.model || settings.model || undefined);
   const key = `${opts.sid}:${opts.chatId}`;
   void (async () => {
     localTurnPumps.add(key);
@@ -2433,13 +2508,14 @@ async function startChatTurn(opts: { sid: string; chatId: string; text: string; 
         assistantMessageId: assistantMsg.id,
         instance: {
           instanceId: instance.id,
-          codexHome: instance.codexHome
+          codexHome: instance.codexHome,
+          backend: instance.backend
         },
         config: {
           cwd: chatCwd,
           sandbox: env.CODEX_SANDBOX,
           approvalPolicy: env.CODEX_APPROVAL_POLICY,
-          model: opts.model || settings.model || env.CODEX_MODEL,
+          model: resolvedModel,
           reasoningEffort: settings.reasoningEffort || env.CODEX_REASONING_EFFORT
         },
         onEvent: (e) => {
@@ -2669,7 +2745,9 @@ async function findAvailablePort(host: string, startPort: number): Promise<numbe
 const port = await findAvailablePort(env.HOST, env.PORT);
 const server = app.listen(port, env.HOST, () => {
   console.log(`[server] listening on http://${env.HOST}:${port}`);
-  console.log(`[server] Codex: sandbox=${env.CODEX_SANDBOX} approvalPolicy=${env.CODEX_APPROVAL_POLICY} cwd=${env.CODEX_CWD}`);
+  console.log(
+    `[server] Agent: backend=${env.CODEX_BACKEND} sandbox=${env.CODEX_SANDBOX} approvalPolicy=${env.CODEX_APPROVAL_POLICY} cwd=${env.CODEX_CWD}`
+  );
   console.log(
     `[server] Sessiond: http://${env.CODEX_SESSIOND_HOST}:${env.CODEX_SESSIOND_PORT} autoStart=${env.CODEX_SESSIOND_AUTO_START}`
   );
