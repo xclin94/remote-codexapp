@@ -653,6 +653,7 @@ function Chat(props: { chatId: string; sessionId: string; onSwitchChat: (chatId:
 
   const chatRef = useRef<HTMLDivElement | null>(null);
   const bottomRef = useRef<HTMLDivElement | null>(null);
+  const composerRef = useRef<HTMLTextAreaElement | null>(null);
   const esRef = useRef<EventSource | null>(null);
   const lastEventIdRef = useRef<number>(0);
   const resumeRebuildRef = useRef<boolean>(false);
@@ -1668,6 +1669,39 @@ function Chat(props: { chatId: string; sessionId: string; onSwitchChat: (chatId:
     await sendPrompt(text);
   };
 
+  const insertManualNewline = () => {
+    const el = composerRef.current;
+    if (!el) {
+      setText((prev) => `${prev}\n`);
+      return;
+    }
+    const start = el.selectionStart ?? text.length;
+    const end = el.selectionEnd ?? text.length;
+    const next = `${text.slice(0, start)}\n${text.slice(end)}`;
+    setText(next);
+    window.requestAnimationFrame(() => {
+      el.focus();
+      const pos = start + 1;
+      el.setSelectionRange(pos, pos);
+    });
+  };
+
+  const cancelAll = async () => {
+    const hadQueue = queuedPrompts.length > 0;
+    if (hadQueue) setQueuedPrompts([]);
+    if (!busy && !startTurnRef.current) {
+      if (hadQueue) addSystem('OK: queue cleared');
+      return;
+    }
+    try {
+      await abortChat(props.chatId);
+      addSystem('OK: abort requested, queue cleared');
+      startPolling();
+    } catch (e: any) {
+      setErr(String(e?.message || e));
+    }
+  };
+
   useEffect(() => {
     if (busy || startTurnRef.current || queuedPrompts.length === 0) return;
     const [next, ...rest] = queuedPrompts;
@@ -1705,6 +1739,8 @@ function Chat(props: { chatId: string; sessionId: string; onSwitchChat: (chatId:
   const activeChatIndex = chatList.findIndex((chat) => chat.id === props.chatId);
   const visibleSessionLimit = activeChatIndex >= 0 ? Math.max(sessionRenderCount, activeChatIndex + 1) : sessionRenderCount;
   const visibleChatList = chatList.slice(0, Math.max(INITIAL_SESSION_RENDER_COUNT, visibleSessionLimit));
+  const showActivityPanel = isMobileLayout ? activityOpen : busy && activity.length > 0;
+  const showQueuePanel = isMobileLayout ? queueOpen : queuedPrompts.length > 0;
 
   useEffect(() => {
     setSessionInstanceTarget(activeChatInstanceId || 'auto');
@@ -2282,12 +2318,8 @@ function Chat(props: { chatId: string; sessionId: string; onSwitchChat: (chatId:
           <div ref={bottomRef} />
         </div>
         {isMobileLayout ? (
-          <div className={`scroll-nav ${scrollNavVisible ? 'show' : ''} ${scrollNavDir === 'up' ? 'to-bottom' : 'to-top'}`}>
+          <div className={`scroll-nav ${scrollNavVisible ? 'show' : ''} ${scrollNavDir === 'up' ? 'to-top' : 'to-bottom'}`}>
             {scrollNavDir === 'up' ? (
-              <button className="btn btn-secondary btn-sm scroll-nav-btn" onClick={() => scrollChatToLatest('smooth')}>
-                Goto Bottom
-              </button>
-            ) : (
               <button
                 className="btn btn-secondary btn-sm scroll-nav-btn"
                 onClick={() => {
@@ -2298,12 +2330,17 @@ function Chat(props: { chatId: string; sessionId: string; onSwitchChat: (chatId:
               >
                 Goto Top
               </button>
+            ) : (
+              <button className="btn btn-secondary btn-sm scroll-nav-btn" onClick={() => scrollChatToLatest('smooth')}>
+                Goto Bottom
+              </button>
             )}
           </div>
         ) : null}
 
         <div className="composer">
           <textarea
+            ref={composerRef}
             className="textarea"
             placeholder="Ask Codex..."
             value={text}
@@ -2329,6 +2366,24 @@ function Chat(props: { chatId: string; sessionId: string; onSwitchChat: (chatId:
             <button className="btn btn-secondary" onClick={() => setFullscreenMode((v) => !v)}>
               {fullscreenMode ? 'Normal' : 'Full'}
             </button>
+            {isMobileLayout && !fullscreenMode ? (
+              <button className={`btn btn-secondary ${activityOpen ? 'btn-active' : ''}`} onClick={() => setActivityOpen((v) => !v)}>
+                Activity
+              </button>
+            ) : null}
+            {isMobileLayout && !fullscreenMode ? (
+              <button className={`btn btn-secondary ${queueOpen ? 'btn-active' : ''}`} onClick={() => setQueueOpen((v) => !v)}>
+                Queue
+              </button>
+            ) : null}
+            {isMobileLayout ? (
+              <button className="btn btn-secondary" onClick={insertManualNewline}>
+                Newline
+              </button>
+            ) : null}
+            <button className="btn btn-secondary" disabled={!busy && queuedPrompts.length === 0} onClick={() => void cancelAll()}>
+              Cancel All
+            </button>
             <button className="btn" onClick={() => setText(AGENT_PROMPT_TEMPLATE)}>
               prompt
             </button>
@@ -2352,7 +2407,7 @@ function Chat(props: { chatId: string; sessionId: string; onSwitchChat: (chatId:
             </span>
           ) : null}
         </div>
-        {busy && activity.length > 0 ? (
+        {showActivityPanel ? (
           <div className="activity">
             <div className="activity-head">
               <div className="activity-title">Activity</div>
@@ -2362,18 +2417,18 @@ function Chat(props: { chatId: string; sessionId: string; onSwitchChat: (chatId:
             </div>
             {activityOpen ? (
               <div className="activity-body">
-                {activity.slice(-10).map((a, idx) => (
+                {activity.length > 0 ? activity.slice(-10).map((a, idx) => (
                   <div className="activity-item" key={`act-${a.ts}-${idx}-${a.stage}`}>
                     <span className="activity-ago">{Math.max(0, Math.round((nowForUi - a.ts) / 1000))}s</span>
                     <span className="activity-stage">{a.stage}</span>
                     <span className="activity-msg">{a.message}</span>
                   </div>
-                ))}
+                )) : <div className="muted">No activity yet.</div>}
               </div>
             ) : null}
           </div>
         ) : null}
-        {queuedPrompts.length > 0 ? (
+        {showQueuePanel ? (
           <div className="queue-panel">
             <div className="queue-head">
               <div className="queue-title">Queued prompts</div>
@@ -2391,7 +2446,7 @@ function Chat(props: { chatId: string; sessionId: string; onSwitchChat: (chatId:
             </div>
             {queueOpen ? (
               <div className="queue-list">
-                {queuedPrompts.map((prompt, idx) => (
+                {queuedPrompts.length > 0 ? queuedPrompts.map((prompt, idx) => (
                   <div className="queue-item" key={`queue-${idx}-${prompt.length}`}>
                     <div className="queue-idx">#{idx + 1}</div>
                     <pre className="queue-text">{normalizeStreamText(prompt)}</pre>
@@ -2402,7 +2457,7 @@ function Chat(props: { chatId: string; sessionId: string; onSwitchChat: (chatId:
                       Remove
                     </button>
                   </div>
-                ))}
+                )) : <div className="muted">Queue is empty.</div>}
               </div>
             ) : null}
           </div>
