@@ -51,6 +51,7 @@ export class CodexMcpClient {
   private readonly backend: AgentBackend;
   private readonly envOverrides: Record<string, string>;
   private activeClaudeProc: ChildProcess | null = null;
+  private lastClaudeRunError: string | null = null;
 
   private sessionId: string | null = null;
   private conversationId: string | null = null;
@@ -407,6 +408,12 @@ export class CodexMcpClient {
     const usage = this.extractUsage(payload);
     if (usage) this.lastUsage = usage;
 
+    if (isObj(payload) && payload.type === 'result' && payload.is_error) {
+      const errors = Array.isArray(payload.errors) ? payload.errors.map((x: unknown) => String(x || '')).filter(Boolean) : [];
+      const merged = errors.join(' | ');
+      if (merged) this.lastClaudeRunError = merged;
+    }
+
     if (isObj(payload) && payload.type === 'stream_event' && isObj(payload.event)) {
       const ev = payload.event;
       const delta = isObj(ev.delta) ? ev.delta : null;
@@ -435,6 +442,7 @@ export class CodexMcpClient {
     resumeSessionId?: string;
     signal?: AbortSignal;
   }): Promise<void> {
+    this.lastClaudeRunError = null;
     const args = ['-p', '--verbose', '--output-format', 'stream-json', '--include-partial-messages'];
     if (opts.resumeSessionId) args.push('--resume', opts.resumeSessionId);
     if (typeof opts.model === 'string' && opts.model.trim()) args.push('--model', opts.model.trim());
@@ -491,7 +499,8 @@ export class CodexMcpClient {
             return;
           }
           const tail = stderrTail.join(' | ');
-          reject(new Error(tail || `claude_exit_${code}`));
+          const detailed = this.lastClaudeRunError || tail;
+          reject(new Error(detailed || `claude_exit_${code}`));
         });
       });
     } finally {

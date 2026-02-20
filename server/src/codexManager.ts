@@ -42,6 +42,16 @@ type CodexInstanceBinding = {
   backend?: 'codex' | 'claude';
 };
 
+function shouldRecoverClaudeSession(error: unknown): boolean {
+  const msg = String((error as any)?.message || '').toLowerCase();
+  if (!msg) return false;
+  return (
+    msg.includes('no conversation found with session id') ||
+    msg.includes('invalid session') ||
+    msg.includes('session not found')
+  );
+}
+
 // One runner per (sessionId, chatId). This keeps Codex session continuity for that chat.
 export class CodexManager {
   private runners = new Map<string, RunnerState>();
@@ -219,7 +229,34 @@ export class CodexManager {
             message: `continuing Codex session (model=${opts.config.model || 'default'})`
           }
         });
-        callResp = await r.client.continueSession(opts.prompt, { signal: r.abort.signal });
+        try {
+          callResp = await r.client.continueSession(opts.prompt, { signal: r.abort.signal });
+        } catch (err) {
+          if (!(r.backend === 'claude' && shouldRecoverClaudeSession(err))) throw err;
+          emit({
+            type: 'raw',
+            msg: {
+              type: 'progress',
+              stage: 'session_recover',
+              message: 'stale Claude session detected; recreating session and retrying current prompt'
+            }
+          });
+          r.client.resetSessionState();
+          callResp = await r.client.startSession(
+            {
+              prompt: opts.prompt,
+              cwd: opts.config.cwd,
+              sandbox: opts.config.sandbox,
+              'approval-policy': opts.config.approvalPolicy,
+              model: opts.config.model,
+              config: opts.config.reasoningEffort
+                ? { model_reasoning_effort: opts.config.reasoningEffort }
+                : undefined
+            },
+            { signal: r.abort.signal }
+          );
+          r.sessionConfigKey = nextConfigKey;
+        }
       }
 
       const usage = callResp ? r.client.getLastUsage() : null;
