@@ -207,6 +207,37 @@ function formatStatusSummary(status: CliStatus, chatId: string, fallbackRuntimeS
 
 function formatInstanceQuotaSummary(item: InstanceStatusItem): string {
   const lines: string[] = [];
+  const quota = toRecord(item.quota || null);
+  const quotaRemaining = toNumber(quota?.remainingQuota);
+  const quotaTotal = toNumber(quota?.totalQuota);
+  const quotaUsed = toNumber(quota?.usedQuota);
+  const quotaCurrency = typeof quota?.currency === 'string' ? quota.currency : '';
+  if (quotaRemaining !== null && quotaTotal !== null && quotaTotal > 0) {
+    const leftPct = Math.max(0, Math.min(100, Math.round((quotaRemaining / quotaTotal) * 100)));
+    lines.push(
+      `${quotaCurrency || 'Quota'} ${leftPct}% left (${quotaRemaining.toFixed(2)} / ${quotaTotal.toFixed(2)})`
+    );
+  } else if (quotaRemaining !== null) {
+    lines.push(`${quotaCurrency || 'Quota'} left ${quotaRemaining.toFixed(2)}`);
+  } else if (quotaUsed !== null) {
+    lines.push(`${quotaCurrency || 'Quota'} used ${quotaUsed.toFixed(2)}`);
+  }
+
+  const modelQuotas = toRecord(quota?.modelQuotas);
+  if (modelQuotas) {
+    const keys = Object.keys(modelQuotas).slice(0, 3);
+    for (const key of keys) {
+      const valueRecord = toRecord(modelQuotas[key]);
+      if (!valueRecord) continue;
+      const mRemain = toNumber(valueRecord.remainingQuota ?? valueRecord.remaining_quota ?? valueRecord.balance);
+      const mTotal = toNumber(valueRecord.totalQuota ?? valueRecord.total_quota ?? valueRecord.quota);
+      if (mRemain !== null && mTotal !== null && mTotal > 0) {
+        const pct = Math.max(0, Math.min(100, Math.round((mRemain / mTotal) * 100)));
+        lines.push(`${key} ${pct}% left`);
+      }
+    }
+  }
+
   const usage = toRecord(item.usage || null);
   const context = usage ? toRecord(usage.context_window) : null;
   const ctxTotal = toNumber(context?.total_tokens);
@@ -227,6 +258,9 @@ function formatInstanceQuotaSummary(item: InstanceStatusItem): string {
     lines.push(`7d ${Math.max(0, 100 - Math.round(secondaryUsed))}% left`);
   }
 
+  if (!lines.length && item.quotaError) {
+    lines.push(`Quota unavailable (${item.quotaError})`);
+  }
   return lines.join(' | ') || 'No quota data yet';
 }
 
@@ -2579,7 +2613,7 @@ function Chat(props: { chatId: string; sessionId: string; onSwitchChat: (chatId:
                   {!item.ready ? <span className="badge badge-tight">not ready</span> : null}
                 </div>
                 <div className="instance-row muted">
-                  login: {item.loginStatus || 'unknown'} | chats: {item.running}/{item.chats} | model: {item.model || 'default'}
+                  login: {item.loginStatus || 'unknown'} | chats: {item.running}/{item.chats} | model: {item.model || 'default'} | quota: {item.quotaSource || 'local-history'}
                 </div>
                 <div className="instance-row muted">
                   home: <code>{item.codexHome}</code>

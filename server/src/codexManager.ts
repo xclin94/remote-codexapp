@@ -158,7 +158,7 @@ export class CodexManager {
 
       r.client.setEventHandler(emit);
 
-      const heartbeatEveryMs = 10_000;
+      const heartbeatEveryMs = 3_000;
       heartbeatTimer = setInterval(() => {
         const now = Date.now();
         if (now - lastNonProgressAt < heartbeatEveryMs) return;

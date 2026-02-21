@@ -37,11 +37,17 @@ function isObj(v: unknown): v is Record<string, any> {
 
 type AgentBackend = 'codex' | 'claude';
 type ClaudeEffort = 'low' | 'medium' | 'high';
+type CodexSandbox = 'read-only' | 'workspace-write' | 'danger-full-access';
+type CodexApprovalPolicy = 'untrusted' | 'on-failure' | 'on-request' | 'never';
 
 function resolveBackend(raw: unknown): AgentBackend {
   if (typeof raw !== 'string') return 'codex';
   const v = raw.trim().toLowerCase();
   return v === 'claude' ? 'claude' : 'codex';
+}
+
+function isRootProcess(): boolean {
+  return typeof process.getuid === 'function' && process.getuid() === 0;
 }
 
 export class CodexMcpClient {
@@ -52,6 +58,9 @@ export class CodexMcpClient {
   private readonly envOverrides: Record<string, string>;
   private activeClaudeProc: ChildProcess | null = null;
   private lastClaudeRunError: string | null = null;
+  private lastClaudeAssistantText = '';
+  private claudeSandbox: CodexSandbox | undefined;
+  private claudeApprovalPolicy: CodexApprovalPolicy | undefined;
 
   private sessionId: string | null = null;
   private conversationId: string | null = null;
@@ -225,9 +234,12 @@ export class CodexMcpClient {
     this.abortPendingApprovals();
     this.sessionId = null;
     this.conversationId = null;
+    this.claudeSandbox = undefined;
+    this.claudeApprovalPolicy = undefined;
     this.sawAssistantTextInFlight = false;
     this.lastUsage = null;
     this.lastRateLimits = null;
+    this.lastClaudeAssistantText = '';
   }
 
   approve(id: string, decision: CodexApprovalDecision): boolean {
@@ -269,13 +281,18 @@ export class CodexMcpClient {
     this.lastUsage = null;
     this.lastRateLimits = null;
     this.sawAssistantTextInFlight = false;
+    this.lastClaudeAssistantText = '';
     if (this.backend === 'claude') {
+      this.claudeSandbox = config.sandbox;
+      this.claudeApprovalPolicy = config['approval-policy'];
       await this.runClaudeTurn(
         {
           prompt: config.prompt,
           cwd: config.cwd,
           model: config.model,
           effort: this.resolveClaudeEffort(config.config),
+          sandbox: config.sandbox,
+          approvalPolicy: config['approval-policy'],
           signal: opts?.signal
         }
       );
@@ -311,10 +328,13 @@ export class CodexMcpClient {
     this.lastUsage = null;
     this.lastRateLimits = null;
     this.sawAssistantTextInFlight = false;
+    this.lastClaudeAssistantText = '';
     if (this.backend === 'claude') {
       await this.runClaudeTurn({
         prompt,
         model: undefined,
+        sandbox: this.claudeSandbox,
+        approvalPolicy: this.claudeApprovalPolicy,
         resumeSessionId: this.sessionId,
         signal: opts?.signal
       });
@@ -361,6 +381,19 @@ export class CodexMcpClient {
     if (!raw) return null;
     if (raw === 'low' || raw === 'medium' || raw === 'high') return raw;
     if (raw === 'xhigh') return 'high';
+    return null;
+  }
+
+  private resolveClaudePermissionMode(
+    sandbox: CodexSandbox | undefined,
+    approvalPolicy: CodexApprovalPolicy | undefined
+  ): 'acceptEdits' | 'bypassPermissions' | 'default' | 'dontAsk' | 'plan' | null {
+    if (approvalPolicy === 'never' || sandbox === 'danger-full-access') {
+      // Claude forbids bypassPermissions under root/sudo. Keep non-interactive behavior as much as possible.
+      return isRootProcess() ? 'acceptEdits' : 'bypassPermissions';
+    }
+    if (approvalPolicy === 'on-failure') return 'acceptEdits';
+    if (approvalPolicy === 'on-request' || approvalPolicy === 'untrusted') return 'default';
     return null;
   }
 
@@ -414,20 +447,53 @@ export class CodexMcpClient {
       if (merged) this.lastClaudeRunError = merged;
     }
 
+    if (isObj(payload) && payload.type === 'assistant' && isObj(payload.message) && Array.isArray((payload.message as any).content)) {
+      for (const item of (payload.message as any).content) {
+        if (!isObj(item) || item.type !== 'tool_use') continue;
+        if (item.name !== 'AskUserQuestion') continue;
+        const firstQuestion = Array.isArray((item.input as any)?.questions)
+          ? (item.input as any).questions.find((q: unknown) => isObj(q) && typeof (q as any).question === 'string')
+          : null;
+        const questionText = firstQuestion && typeof (firstQuestion as any).question === 'string'
+          ? (firstQuestion as any).question.trim()
+          : '';
+        this.lastClaudeRunError = questionText
+          ? `claude_interactive_question_not_supported: ${questionText}`
+          : 'claude_interactive_question_not_supported';
+        // This environment cannot answer AskUserQuestion tool calls yet; stop to avoid endless "thinking".
+        this.stopActiveClaudeProcess();
+        break;
+      }
+    }
+
+    if (isObj(payload) && payload.type === 'user' && typeof (payload as any).tool_use_result === 'string') {
+      const toolUseResult = String((payload as any).tool_use_result || '');
+      if (/answer questions\?/i.test(toolUseResult)) {
+        this.lastClaudeRunError = 'claude_interactive_question_not_supported';
+        this.stopActiveClaudeProcess();
+      }
+    }
+
     if (isObj(payload) && payload.type === 'stream_event' && isObj(payload.event)) {
       const ev = payload.event;
       const delta = isObj(ev.delta) ? ev.delta : null;
       if (ev.type === 'content_block_delta' && delta?.type === 'text_delta' && typeof delta.text === 'string') {
         this.onEvent?.({ type: 'agent_message', message: delta.text });
+        this.lastClaudeAssistantText += delta.text;
         this.sawAssistantTextInFlight = true;
       }
     }
 
-    if (isObj(payload) && payload.type === 'assistant' && !this.sawAssistantTextInFlight) {
+    if (isObj(payload) && payload.type === 'assistant') {
       const text = this.extractClaudeAssistantText(payload);
       if (text) {
-        this.onEvent?.({ type: 'agent_message', message: text });
-        this.sawAssistantTextInFlight = true;
+        const prev = this.lastClaudeAssistantText;
+        const delta = text.startsWith(prev) ? text.slice(prev.length) : text;
+        if (delta) {
+          this.onEvent?.({ type: 'agent_message', message: delta });
+          this.sawAssistantTextInFlight = true;
+        }
+        this.lastClaudeAssistantText = text;
       }
     }
 
@@ -439,22 +505,39 @@ export class CodexMcpClient {
     cwd?: string;
     model?: string;
     effort?: ClaudeEffort | null;
+    sandbox?: CodexSandbox;
+    approvalPolicy?: CodexApprovalPolicy;
     resumeSessionId?: string;
     signal?: AbortSignal;
   }): Promise<void> {
     this.lastClaudeRunError = null;
-    const args = ['-p', '--verbose', '--output-format', 'stream-json', '--include-partial-messages'];
+    this.lastClaudeAssistantText = '';
+    const args = ['-p', '--verbose', '--input-format', 'text', '--output-format', 'stream-json', '--include-partial-messages'];
     if (opts.resumeSessionId) args.push('--resume', opts.resumeSessionId);
     if (typeof opts.model === 'string' && opts.model.trim()) args.push('--model', opts.model.trim());
     if (opts.effort) args.push('--effort', opts.effort);
-    args.push(opts.prompt);
-
+    const permissionMode = this.resolveClaudePermissionMode(opts.sandbox, opts.approvalPolicy);
+    if (permissionMode) {
+      args.push('--permission-mode', permissionMode);
+      if (permissionMode === 'bypassPermissions' && !isRootProcess()) {
+        args.push('--dangerously-skip-permissions');
+      }
+    }
+    const cwdTrimmed = typeof opts.cwd === 'string' && opts.cwd.trim() ? opts.cwd.trim() : '';
+    if (cwdTrimmed) {
+      args.push('--add-dir', cwdTrimmed);
+    }
+    if (opts.sandbox === 'danger-full-access') {
+      args.push('--add-dir', '/');
+    }
     const child = spawn('claude', args, {
       cwd: typeof opts.cwd === 'string' && opts.cwd.trim() ? opts.cwd.trim() : undefined,
       env: this.buildMergedEnv(),
-      stdio: ['ignore', 'pipe', 'pipe']
+      stdio: ['pipe', 'pipe', 'pipe']
     });
     this.activeClaudeProc = child;
+    child.stdin.write(opts.prompt);
+    child.stdin.end();
 
     const stdoutRl = readline.createInterface({ input: child.stdout });
     const stderrRl = readline.createInterface({ input: child.stderr });

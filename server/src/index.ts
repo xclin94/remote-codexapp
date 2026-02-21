@@ -62,6 +62,14 @@ type CodexInstanceConfig = {
   codexHome: string;
   backend: 'codex' | 'claude';
   model?: string;
+  sandbox?: 'read-only' | 'workspace-write' | 'danger-full-access';
+  approvalPolicy?: 'untrusted' | 'on-failure' | 'on-request' | 'never';
+  quotaSource?: 'auto' | 'cliproxyapi';
+  quotaApiBaseUrl?: string;
+  quotaApiPath?: string;
+  quotaApiKey?: string;
+  quotaApiKeyEnv?: string;
+  quotaApiAccountId?: string;
   enabled: boolean;
 };
 
@@ -87,6 +95,13 @@ type InstanceHealthSnapshot = {
   loginStatus: string | null;
 };
 
+type InstanceQuotaSnapshot = {
+  source: 'cliproxyapi';
+  data: Record<string, unknown>;
+  fetchedAt: number;
+  error?: string;
+};
+
 type TerminalRuntime = {
   sid: string;
   record: TerminalSessionRecord;
@@ -104,7 +119,9 @@ const COMPACT_SUMMARY_MAX_CHARS = 2_000;
 const COMPACT_BOOTSTRAP_MAX_CHARS = 4_000;
 const cliHistorySnapshotCacheByHome = new Map<string, { expiresAt: number; snapshot: CliHistoryStatusSnapshot | null }>();
 const instanceHealthCache = new Map<string, { expiresAt: number; snapshot: InstanceHealthSnapshot }>();
+const instanceQuotaCache = new Map<string, { expiresAt: number; snapshot: InstanceQuotaSnapshot | null }>();
 const INSTANCE_HEALTH_CACHE_TTL_MS = 20_000;
+const INSTANCE_QUOTA_CACHE_TTL_MS = 20_000;
 let autoInstanceRoundRobinCursor = 0;
 
 function normalizeCompactKeep(value: unknown): number {
@@ -435,8 +452,48 @@ function parseLocalInstanceConfig(filePath: string): InstanceConfigSnapshot {
     const enabled = item.enabled !== false;
     const backend = normalizeBackend(item.backend);
     const model = typeof item.model === 'string' && item.model.trim() ? item.model.trim() : undefined;
+    const sandbox = item.sandbox === 'read-only' || item.sandbox === 'workspace-write' || item.sandbox === 'danger-full-access'
+      ? item.sandbox
+      : undefined;
+    const approvalPolicy = item.approvalPolicy === 'untrusted' || item.approvalPolicy === 'on-failure' || item.approvalPolicy === 'on-request' || item.approvalPolicy === 'never'
+      ? item.approvalPolicy
+      : undefined;
+    const quotaSource = item.quotaSource === 'cliproxyapi' ? 'cliproxyapi' : undefined;
+    const quotaApiBaseUrl = typeof item.quotaApiBaseUrl === 'string' && item.quotaApiBaseUrl.trim()
+      ? item.quotaApiBaseUrl.trim()
+      : undefined;
+    const quotaApiPath = typeof item.quotaApiPath === 'string' && item.quotaApiPath.trim()
+      ? item.quotaApiPath.trim()
+      : undefined;
+    const quotaApiKey = typeof item.quotaApiKey === 'string' && item.quotaApiKey.trim()
+      ? item.quotaApiKey.trim()
+      : undefined;
+    const quotaApiKeyEnv = typeof item.quotaApiKeyEnv === 'string' && item.quotaApiKeyEnv.trim()
+      ? item.quotaApiKeyEnv.trim()
+      : undefined;
+    const quotaApiAccountId = typeof item.quotaApiAccountId === 'string' && item.quotaApiAccountId.trim()
+      ? item.quotaApiAccountId.trim()
+      : undefined;
     const label = typeof item.label === 'string' && item.label.trim() ? item.label.trim() : id;
-    byId.set(id, { id, label, codexHome, backend, model, enabled });
+    byId.set(
+      id,
+      {
+        id,
+        label,
+        codexHome,
+        backend,
+        model,
+        sandbox,
+        approvalPolicy,
+        quotaSource,
+        quotaApiBaseUrl,
+        quotaApiPath,
+        quotaApiKey,
+        quotaApiKeyEnv,
+        quotaApiAccountId,
+        enabled
+      }
+    );
   }
 
   if (byId.size === 0) {
@@ -566,6 +623,148 @@ function getInstanceHealth(instance: CodexInstanceConfig): InstanceHealthSnapsho
   const snapshot: InstanceHealthSnapshot = { ready, loginStatus };
   instanceHealthCache.set(cacheKey, { expiresAt: Date.now() + INSTANCE_HEALTH_CACHE_TTL_MS, snapshot });
   return snapshot;
+}
+
+function pickRecordFromEnvelope(raw: unknown): Record<string, unknown> | null {
+  if (!isRecord(raw)) return null;
+  if (isRecord(raw.data)) return raw.data as Record<string, unknown>;
+  if (isRecord(raw.result)) return raw.result as Record<string, unknown>;
+  if (isRecord(raw.payload)) return raw.payload as Record<string, unknown>;
+  return raw;
+}
+
+function getNumericFromKeys(raw: Record<string, unknown>, keys: string[]): number | null {
+  for (const key of keys) {
+    const value = normalizeNumeric(raw[key]);
+    if (value !== null) return value;
+  }
+  return null;
+}
+
+function getStringFromKeys(raw: Record<string, unknown>, keys: string[]): string | null {
+  for (const key of keys) {
+    const value = raw[key];
+    if (typeof value !== 'string') continue;
+    const trimmed = value.trim();
+    if (trimmed) return trimmed;
+  }
+  return null;
+}
+
+function normalizeCliProxyQuotaPayload(payload: unknown): Record<string, unknown> | null {
+  const root = pickRecordFromEnvelope(payload);
+  if (!root) return null;
+  const out: Record<string, unknown> = { provider: 'cliproxyapi' };
+
+  const remaining = getNumericFromKeys(root, [
+    'remaining_quota',
+    'remainingQuota',
+    'remaining_balance',
+    'remainingBalance',
+    'available_quota',
+    'availableQuota',
+    'available_credit',
+    'availableCredit',
+    'balance'
+  ]);
+  const total = getNumericFromKeys(root, ['total_quota', 'totalQuota', 'quota', 'credit_limit', 'creditLimit']);
+  const used = getNumericFromKeys(root, ['used_quota', 'usedQuota', 'consumed_quota', 'consumedQuota', 'spent']);
+
+  if (remaining !== null) out.remainingQuota = remaining;
+  if (total !== null) out.totalQuota = total;
+  if (used !== null) out.usedQuota = used;
+  if (remaining === null && total !== null && used !== null) {
+    out.remainingQuota = Math.max(0, total - used);
+  }
+
+  const currency = getStringFromKeys(root, ['currency', 'quota_unit', 'quotaUnit', 'unit']);
+  if (currency) out.currency = currency;
+
+  if (isRecord(root.model_quotas)) out.modelQuotas = root.model_quotas;
+  else if (isRecord(root.modelQuotas)) out.modelQuotas = root.modelQuotas;
+
+  const accountId = getStringFromKeys(root, ['account_id', 'accountId', 'key_id', 'keyId', 'token_id', 'tokenId']);
+  if (accountId) out.accountId = accountId;
+
+  const hasSignals = typeof out.remainingQuota !== 'undefined'
+    || typeof out.totalQuota !== 'undefined'
+    || typeof out.usedQuota !== 'undefined'
+    || typeof out.modelQuotas !== 'undefined';
+  return hasSignals ? out : null;
+}
+
+async function fetchCliProxyInstanceQuota(instance: CodexInstanceConfig): Promise<InstanceQuotaSnapshot | null> {
+  const base = (instance.quotaApiBaseUrl || '').trim();
+  if (!base) return null;
+  const pathName = (instance.quotaApiPath || '/v0/management/usage').trim() || '/v0/management/usage';
+  const cacheKey = `${instance.id}|${base}|${pathName}|${instance.quotaApiAccountId || ''}`;
+  const cached = instanceQuotaCache.get(cacheKey);
+  if (cached && cached.expiresAt > Date.now()) return cached.snapshot;
+
+  const url = new URL(pathName, base.endsWith('/') ? base : `${base}/`).toString();
+  const apiKey = instance.quotaApiKey
+    || (instance.quotaApiKeyEnv ? process.env[instance.quotaApiKeyEnv] : undefined)
+    || process.env.CLIPROXYAPI_KEY
+    || process.env.OPENAI_API_KEY
+    || '';
+  const headers: Record<string, string> = { accept: 'application/json' };
+  if (apiKey.trim()) {
+    headers.authorization = `Bearer ${apiKey.trim()}`;
+  }
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 1500);
+  try {
+    const r = await fetch(url, { headers, signal: controller.signal });
+    if (!r.ok) {
+      const failed: InstanceQuotaSnapshot = {
+        source: 'cliproxyapi',
+        data: {},
+        fetchedAt: Date.now(),
+        error: `http_${r.status}`
+      };
+      instanceQuotaCache.set(cacheKey, { expiresAt: Date.now() + INSTANCE_QUOTA_CACHE_TTL_MS, snapshot: failed });
+      return failed;
+    }
+    const body = await r.json().catch(() => null);
+    const normalized = normalizeCliProxyQuotaPayload(body);
+    if (!normalized) {
+      const failed: InstanceQuotaSnapshot = {
+        source: 'cliproxyapi',
+        data: {},
+        fetchedAt: Date.now(),
+        error: 'unsupported_shape'
+      };
+      instanceQuotaCache.set(cacheKey, { expiresAt: Date.now() + INSTANCE_QUOTA_CACHE_TTL_MS, snapshot: failed });
+      return failed;
+    }
+    if (instance.quotaApiAccountId) {
+      normalized.accountId = instance.quotaApiAccountId;
+    }
+    const snap: InstanceQuotaSnapshot = {
+      source: 'cliproxyapi',
+      data: normalized,
+      fetchedAt: Date.now()
+    };
+    instanceQuotaCache.set(cacheKey, { expiresAt: Date.now() + INSTANCE_QUOTA_CACHE_TTL_MS, snapshot: snap });
+    return snap;
+  } catch (e: any) {
+    const failed: InstanceQuotaSnapshot = {
+      source: 'cliproxyapi',
+      data: {},
+      fetchedAt: Date.now(),
+      error: e?.name === 'AbortError' ? 'request_timeout' : 'request_failed'
+    };
+    instanceQuotaCache.set(cacheKey, { expiresAt: Date.now() + INSTANCE_QUOTA_CACHE_TTL_MS, snapshot: failed });
+    return failed;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function getInstanceQuotaSnapshot(instance: CodexInstanceConfig): Promise<InstanceQuotaSnapshot | null> {
+  if (instance.quotaSource !== 'cliproxyapi') return null;
+  return fetchCliProxyInstanceQuota(instance);
 }
 
 type ResolveCreateInstanceResult =
@@ -1720,7 +1919,7 @@ app.get('/api/cli-status', async (_req, res) => {
   });
 });
 
-app.get('/api/instances', (req, res) => {
+app.get('/api/instances', async (req, res) => {
   const sid = requireAuth(req, res);
   if (!sid) return;
   void sid;
@@ -1737,9 +1936,10 @@ app.get('/api/instances', (req, res) => {
     }
   }
 
-  const instances = snapshot.instances.map((instance) => {
+  const instances = await Promise.all(snapshot.instances.map(async (instance) => {
     const history = getLatestTokenCountFromCodexHistory(instance.codexHome);
     const health = getInstanceHealth(instance);
+    const quota = await getInstanceQuotaSnapshot(instance);
     const stats = statsByInstance.get(instance.id) || { chats: 0, running: 0 };
     return {
       id: instance.id,
@@ -1747,6 +1947,9 @@ app.get('/api/instances', (req, res) => {
       enabled: instance.enabled,
       backend: instance.backend,
       model: instance.model || null,
+      sandbox: instance.sandbox || env.CODEX_SANDBOX,
+      approvalPolicy: instance.approvalPolicy || env.CODEX_APPROVAL_POLICY,
+      quotaSource: instance.quotaSource || null,
       codexHome: instance.codexHome,
       isDefault: snapshot.defaultInstanceId === instance.id,
       ready: health.ready,
@@ -1754,10 +1957,13 @@ app.get('/api/instances', (req, res) => {
       usage: history?.usage || null,
       rateLimits: history?.rateLimits || null,
       usageUpdatedAt: history?.timestampMs || null,
+      quota: quota?.data || null,
+      quotaUpdatedAt: quota?.fetchedAt || null,
+      quotaError: quota?.error || null,
       chats: stats.chats,
       running: stats.running
     };
-  });
+  }));
 
   res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
   res.setHeader('Pragma', 'no-cache');
@@ -2497,6 +2703,8 @@ async function startChatTurn(opts: { sid: string; chatId: string; text: string; 
   const settings = chat.settings || {};
   const chatCwd = ensureChatWorkingDirectory(opts.sid, chat);
   const resolvedModel = resolveModelForInstance(instance, opts.model || settings.model || undefined);
+  const effectiveSandbox = instance.sandbox || env.CODEX_SANDBOX;
+  const effectiveApprovalPolicy = instance.approvalPolicy || env.CODEX_APPROVAL_POLICY;
   const key = `${opts.sid}:${opts.chatId}`;
   void (async () => {
     localTurnPumps.add(key);
@@ -2513,8 +2721,8 @@ async function startChatTurn(opts: { sid: string; chatId: string; text: string; 
         },
         config: {
           cwd: chatCwd,
-          sandbox: env.CODEX_SANDBOX,
-          approvalPolicy: env.CODEX_APPROVAL_POLICY,
+          sandbox: effectiveSandbox,
+          approvalPolicy: effectiveApprovalPolicy,
           model: resolvedModel,
           reasoningEffort: settings.reasoningEffort || env.CODEX_REASONING_EFFORT
         },

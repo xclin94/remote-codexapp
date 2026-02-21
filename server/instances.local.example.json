@@ -28,6 +28,12 @@
       "codexHome": "/root/.codex",
       "backend": "claude",
       "model": "gemini-3.1-pro-high",
+      "sandbox": "danger-full-access",
+      "quotaSource": "cliproxyapi",
+      "quotaApiBaseUrl": "http://127.0.0.1:8317",
+      "quotaApiPath": "/v0/management/usage",
+      "quotaApiKeyEnv": "CLIPROXYAPI_KEY",
+      "approvalPolicy": "never",
       "enabled": true
     }
   ]

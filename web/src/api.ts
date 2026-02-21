@@ -92,6 +92,7 @@ export type InstanceStatusItem = {
   enabled: boolean;
   backend?: 'codex' | 'claude';
   model?: string | null;
+  quotaSource?: 'cliproxyapi' | null;
   codexHome: string;
   isDefault: boolean;
   ready: boolean;
@@ -99,6 +100,9 @@ export type InstanceStatusItem = {
   usage?: Record<string, unknown> | null;
   rateLimits?: Record<string, unknown> | null;
   usageUpdatedAt?: number | null;
+  quota?: Record<string, unknown> | null;
+  quotaUpdatedAt?: number | null;
+  quotaError?: string | null;
   chats: number;
   running: number;
 };
